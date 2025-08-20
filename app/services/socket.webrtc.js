@@ -1,6 +1,6 @@
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
-import LiveSession from "../model/LiveSessions/liveSession.model.js";
+import LiveSession from "../model/liveSessions/liveSession.model.js";
 import LiveSessionParticipant from "../model/liveSessionParticipant/liveSessionParticipant.model.js";
 import { ROLE_MAP } from "../constant/role.js";
 
