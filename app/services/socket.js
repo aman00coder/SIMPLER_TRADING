@@ -1,7 +1,7 @@
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
 import liveSessionParticipant from "../model/liveSessionParticipant/liveSessionParticipant.model.js";
-import liveSession from "../model/liveSessions/liveSession.model.js"
+import liveSession from "../model/liveSessions/liveeSession.model.js"
 
 export default function setupSocket(server) {
     const io = new Server(server, {
