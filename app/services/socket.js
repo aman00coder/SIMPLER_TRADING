@@ -1,7 +1,7 @@
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
-import LiveSessionParticipant from "../model/liveSessionParticipant/liveSessionParticipant.model.js";
-import LiveSession from "../model/liveSessions/liveSession.model.js";
+import liveSessionParticipant from "../model/liveSessionParticipant/liveSessionParticipant.model.js";
+import liveSession from "../model/liveSessions/liveSession.model.js"
 
 export default function setupSocket(server) {
     const io = new Server(server, {
@@ -23,19 +23,19 @@ export default function setupSocket(server) {
                 const userId = decoded.userId;
 
                 // Check if session exists
-                const sessionExists = await LiveSession.findById(sessionId);
+                const sessionExists = await liveSession.findById(sessionId);
                 if (!sessionExists) {
                     return socket.emit("error_message", "Session not found");
                 }
 
                 // Check if already joined
-                const alreadyJoined = await LiveSessionParticipant.findOne({ sessionId, userId });
+                const alreadyJoined = await liveSessionParticipant.findOne({ sessionId, userId });
                 if (alreadyJoined) {
                     return socket.emit("error_message", "User already joined this session");
                 }
 
                 // Add participant
-                await LiveSessionParticipant.create({
+                await liveSessionParticipant.create({
                     sessionId,
                     userId,
                     socketId: socket.id
@@ -58,7 +58,7 @@ export default function setupSocket(server) {
         // =========================
         socket.on("leave_room", async ({ sessionId, userId }) => {
             try {
-                await LiveSessionParticipant.deleteOne({ sessionId, userId });
+                await liveSessionParticipant.deleteOne({ sessionId, userId });
                 socket.leave(sessionId);
                 io.to(sessionId).emit("user_left", { userId });
                 console.log(`User ${userId} left session ${sessionId}`);
@@ -72,10 +72,10 @@ export default function setupSocket(server) {
         // =========================
         socket.on("disconnect", async () => {
             try {
-                const participant = await LiveSessionParticipant.findOne({ socketId: socket.id });
+                const participant = await liveSessionParticipant.findOne({ socketId: socket.id });
                 if (participant) {
                     const { sessionId, userId } = participant;
-                    await LiveSessionParticipant.deleteOne({ socketId: socket.id });
+                    await liveSessionParticipant.deleteOne({ socketId: socket.id });
                     io.to(sessionId).emit("user_left", { userId });
                     console.log(`User ${userId} disconnected from session ${sessionId}`);
                 }
