@@ -106,7 +106,6 @@ export const saveliveSessionRecording = async (req, res) => {
   }
 };
 
-
 export const getAllLiveSessionRecording = async (req, res) => {
     try {
         const { sessionId } = req.params;
