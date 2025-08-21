@@ -101,20 +101,14 @@ export const createWhiteboard = async (req, res) => {
     const createdBy = req.tokenData?.userId;
     const createdByRole = req.tokenData?.role;
 
-    if (!createdBy) {
+    if (!createdBy)
       return sendErrorResponse(res, errorEn.UNAUTHORIZED, HttpStatus.UNAUTHORIZED);
-    }
 
     const body = { ...req.body };
 
-    // ✅ Safe parse helper
-    const parseWithLog = (key, fallback) => {
-      const parsed = safeJsonParse(body[key], fallback);
-      if (parsed === null) console.warn(`⚠️ Failed to parse field: ${key}`);
-      return parsed;
-    };
+    // parse fields safely
+    const parseWithLog = (key, fallback) => safeJsonParse(body[key], fallback);
 
-    // structured fields
     let participants = parseWithLog("participants", []);
     const canvasData = parseWithLog("canvasData", {});
     const liveStream = parseWithLog("liveStream", {});
@@ -124,15 +118,15 @@ export const createWhiteboard = async (req, res) => {
     const filesFromBody = parseWithLog("files", []);
     const whiteboardUrlFromBody = parseWithLog("whiteboardUrl", []);
     const recordingUrlFromBody = parseWithLog("recordingUrl", []);
+    const toolSettings = parseWithLog("toolSettings", {});
 
-    // numeric/boolean conversions
     const maxParticipants = toNumber(body.maxParticipants, 20);
     const isActive = toBoolean(body.isActive, true);
     const isPublic = toBoolean(body.isPublic, false);
     const passwordProtected = toBoolean(body.passwordProtected, false);
     const isArchived = toBoolean(body.isArchived, false);
 
-    // files uploaded via multer
+    // multer files
     const uploadedWhiteboardUrl = buildUploadedFiles(req.files?.whiteboardUrl, createdBy);
     const uploadedRecordingUrl = buildUploadedFiles(req.files?.recordingUrl, createdBy);
     const uploadedFiles = [
@@ -140,58 +134,42 @@ export const createWhiteboard = async (req, res) => {
       ...buildUploadedFiles(req.files?.files, createdBy),
     ];
 
-    // ✅ Deduplication helper
     const dedupeFiles = (arr) => {
       const seen = new Set();
-      return arr.filter((f) => {
-        if (!f?.fileUrl) return false;
-        if (seen.has(f.fileUrl)) return false;
-        seen.add(f.fileUrl);
-        return true;
-      });
+      return arr.filter((f) => f?.fileUrl && !seen.has(f.fileUrl) && seen.add(f.fileUrl));
     };
 
-    // merge + dedupe
     const whiteboardUrl = dedupeFiles([...whiteboardUrlFromBody, ...uploadedWhiteboardUrl]);
     const recordingUrl = dedupeFiles([...recordingUrlFromBody, ...uploadedRecordingUrl]);
     const files = dedupeFiles([...filesFromBody, ...uploadedFiles]);
 
-    // convert ObjectId references
-    let participantsObj = convertObjectIdArray(participants, "user");
+    const participantsObj = convertObjectIdArray(participants, "user");
     const chatHistoryObj = convertObjectIdArray(chatHistory, "sender");
     const versionHistoryObj = convertObjectIdArray(versionHistory, "updatedBy");
 
-    // ensure creator is always a participant
-    if (!participantsObj.find(p => p.user.toString() === createdBy.toString())) {
+    if (!participantsObj.find(p => p.user.toString() === createdBy.toString()))
       participantsObj.push({ user: new mongoose.Types.ObjectId(createdBy), role: "owner" });
-    }
 
-    // clonedFrom
     const clonedFrom = body.clonedFrom && isObjectId(body.clonedFrom)
       ? new mongoose.Types.ObjectId(body.clonedFrom)
       : null;
 
-    // password hashing
-    let boardPassword = null;
-    let whiteboardPassword = null;
+    let boardPassword = null, whiteboardPassword = null;
     if (passwordProtected) {
-      if (!body.boardPassword && !body.whiteboardPassword) {
+      if (!body.boardPassword && !body.whiteboardPassword)
         return sendErrorResponse(res, errorEn.WHITEBOARD_PASSWORD_REQUIRED, HttpStatus.BAD_REQUEST);
-      }
       if (body.boardPassword) boardPassword = await genPassword(body.boardPassword);
       if (body.whiteboardPassword) whiteboardPassword = await genPassword(body.whiteboardPassword);
     }
 
-    // dates + counters
     const lastActivity = body.lastActivity ? new Date(body.lastActivity) : new Date();
     const totalEdits = toNumber(body.totalEdits, 0);
     const totalMessages = toNumber(body.totalMessages, 0);
     const activeUsersCount = toNumber(body.activeUsersCount, 0);
 
-    // ✅ Core validations
+    // validations
     const validations = [
       [!body.title, errorEn.WHITEBOARD_TITLE_REQUIRED],
-      [!body.description, errorEn.WHITEBOARD_DESCRIPTION_REQUIRED],
       [!body.whiteboardType, errorEn.WHITEBOARD_TYPE_REQUIRED],
       [!participantsObj || participantsObj.length === 0, errorEn.WHITEBOARD_PARTICIPANTS_REQUIRED],
       [!body.currentSessionId, errorEn.WHITEBOARD_SESSIONID_REQUIRED],
@@ -200,11 +178,8 @@ export const createWhiteboard = async (req, res) => {
       [!canvasData, errorEn.WHITEBOARD_CANVAS_REQUIRED],
       [maxParticipants <= 0, errorEn.WHITEBOARD_MAX_PARTICIPANTS_REQUIRED],
     ];
-    for (const [fail, msg] of validations) {
-      if (fail) return sendErrorResponse(res, msg, HttpStatus.BAD_REQUEST);
-    }
+    for (const [fail, msg] of validations) if (fail) return sendErrorResponse(res, msg, HttpStatus.BAD_REQUEST);
 
-    // ✅ liveStream conditional check
     if (liveStream && Object.keys(liveStream).length > 0) {
       if (typeof liveStream.isLive !== "boolean")
         return sendErrorResponse(res, errorEn.WHITEBOARD_LIVESTREAM_REQUIRED, HttpStatus.BAD_REQUEST);
@@ -214,7 +189,6 @@ export const createWhiteboard = async (req, res) => {
         return sendErrorResponse(res, errorEn.WHITEBOARD_SESSIONID_REQUIRED, HttpStatus.BAD_REQUEST);
     }
 
-    // build save object
     const dataToSave = {
       whiteboardId: body.whiteboardId || uuidv4(),
       title: body.title,
@@ -223,10 +197,18 @@ export const createWhiteboard = async (req, res) => {
       createdByRole,
       participants: participantsObj,
       canvasData,
+      toolSettings,
+      selectedTool: body.selectedTool || "pen",
+      layers: parseWithLog("layers", []),
+      undoStack: parseWithLog("undoStack", []),
+      redoStack: parseWithLog("redoStack", []),
       liveStream,
       chatHistory: chatHistoryObj,
+      typingStatus: parseWithLog("typingStatus", []),
+      cursorHistory: parseWithLog("cursorHistory", []),
       files,
       versionHistory: versionHistoryObj,
+      versionTags: parseWithLog("versionTags", []),
       isActive,
       isPublic,
       accessType: body.accessType,
@@ -241,8 +223,15 @@ export const createWhiteboard = async (req, res) => {
       lastActivity,
       totalEdits,
       totalMessages,
+      totalDrawActions: toNumber(body.totalDrawActions, 0),
+      totalErases: toNumber(body.totalErases, 0),
+      totalFilesUploaded: toNumber(body.totalFilesUploaded, 0),
+      totalViewers: toNumber(body.totalViewers, 0),
       tags,
+      tagsDetailed: parseWithLog("tagsDetailed", []),
       recordingUrl,
+      replayAvailable: toBoolean(body.replayAvailable, false),
+      replayData: parseWithLog("replayData", {}),
       isArchived,
       currentSessionId: body.currentSessionId,
       activeUsersCount,
@@ -250,13 +239,10 @@ export const createWhiteboard = async (req, res) => {
     };
 
     const created = await commonServices.create(whiteBoardModel, dataToSave);
-    if (!created)
-      return sendErrorResponse(res, errorEn.WHITEBOARD_NOT_CREATED, HttpStatus.BAD_REQUEST);
+    if (!created) return sendErrorResponse(res, errorEn.WHITEBOARD_NOT_CREATED, HttpStatus.BAD_REQUEST);
 
-    // ✅ Init RTC
     initWhiteboardRTC(created.whiteboardId, created._id, createdBy);
 
-    // ✅ remove sensitive fields before sending response
     const safeResponse = created.toObject();
     delete safeResponse.boardPassword;
     delete safeResponse.whiteboardPassword;
@@ -272,7 +258,6 @@ export const createWhiteboard = async (req, res) => {
 
 
 
-
 /* =======================
    GET WHITEBOARD
    ======================= */
@@ -284,15 +269,22 @@ export const getAllWhiteboards = async (req, res) => {
     const limit = parseInt(req.query.limit, 10) || 10;
     const skip = (page - 1) * limit;
 
+    // Filters
     const filters = {};
     if (req.query.isActive !== undefined) filters.isActive = req.query.isActive === "true";
+    if (req.query.isArchived !== undefined) filters.isArchived = req.query.isArchived === "true";
     if (req.query.status) filters.status = req.query.status;
     if (req.query.accessType) filters.accessType = req.query.accessType;
+    if (req.query.createdBy) filters.createdBy = req.query.createdBy;
 
-    // Populate config
+    // Populate related fields (all fields)
     const populateFields = [
-      { path: "createdBy", select: "name email phone profilePic role" },
-      { path: "participants.user", select: "name email phone profilePic role" }
+      { path: "createdBy" },
+      { path: "participants.user" },
+      { path: "versionHistory.updatedBy" },
+      // { path: "favoriteBy" },
+      // { path: "projectId" },
+      // { path: "clonedFrom" }
     ];
 
     // Fetch whiteboards
@@ -304,17 +296,29 @@ export const getAllWhiteboards = async (req, res) => {
       .limit(limit)
       .lean();
 
+    // Remove sensitive fields
+    const whiteboardsSafe = whiteboards.map(wb => {
+      delete wb.boardPassword;
+      delete wb.whiteboardPassword;
+      return wb;
+    });
+
     const total = await commonServices.count(whiteBoardModel, filters);
 
-    return sendSuccessResponse(res, {
-      data: whiteboards,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
+    return sendSuccessResponse(
+      res,
+      {
+        data: whiteboardsSafe,
+        pagination: {
+          total,
+          page,
+          limit,
+          totalPages: Math.ceil(total / limit),
+        },
       },
-    }, successEn.WHITEBOARD_FETCHED, HttpStatus.OK);
+      successEn.WHITEBOARD_FETCHED,
+      HttpStatus.OK
+    );
 
   } catch (err) {
     console.error("🔥 getAllWhiteboards error:", err);
@@ -327,29 +331,49 @@ export const getAllWhiteboards = async (req, res) => {
    GET SINGLE WHITEBOARD
    ======================= */
 
-export const getSingleWhiteboard = (req, res) => {
+export const getSingleWhiteboard = async (req, res) => {
   try {
     const { whiteboardId } = req.params;
 
-    if (!whiteboardId) return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
+    if (!whiteboardId) {
+      return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
+    }
 
-    const query = isObjectId(whiteboardId) ? { _id: new mongoose.Types.ObjectId(whiteboardId) } : { whiteboardId };
+    const query = isObjectId(whiteboardId)
+      ? { _id: new mongoose.Types.ObjectId(whiteboardId) }
+      : { whiteboardId };
 
-    commonServices.findOne(whiteBoardModel, query)
-      .then((whiteboard) => {
-        if (!whiteboard) return sendErrorResponse(res, errorEn.WHITEBOARD_NOT_FOUND, HttpStatus.NOT_FOUND);
-        return sendSuccessResponse(res, whiteboard, successEn.WHITEBOARD_FETCHED, HttpStatus.OK);
-      })
-      .catch((err) => {
-        console.error("🔥 getSingleWhiteboard error:", err);
-        return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
-      });
-    
-  } catch (error) {
-    console.error("🔥 getAllWhiteboards error:", err);
+    // Populate related fields (all data, no select)
+    const populateFields = [
+      { path: "createdBy" },
+      { path: "participants.user" },
+      { path: "versionHistory.updatedBy" },
+      // { path: "favoriteBy" },
+      // { path: "projectId" },
+      // { path: "clonedFrom" }
+    ];
+
+    const whiteboard = await whiteBoardModel
+      .findOne(query)
+      .populate(populateFields)
+      .lean();
+
+    if (!whiteboard) {
+      return sendErrorResponse(res, errorEn.WHITEBOARD_NOT_FOUND, HttpStatus.NOT_FOUND);
+    }
+
+    // Remove sensitive fields
+    delete whiteboard.boardPassword;
+    delete whiteboard.whiteboardPassword;
+
+    return sendSuccessResponse(res, whiteboard, successEn.WHITEBOARD_FETCHED, HttpStatus.OK);
+
+  } catch (err) {
+    console.error("🔥 getSingleWhiteboard error:", err);
     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
   }
-}
+};
+
 
 
 
