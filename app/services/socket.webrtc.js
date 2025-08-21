@@ -2,11 +2,13 @@ import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
 import LiveSession from "../model/liveSessions/liveeSession.model.js";
 import LiveSessionParticipant from "../model/liveSessionParticipant/liveSessionParticipant.model.js";
+import whiteboardModel from "../model/whiteboard/whiteboard.model.js";
 import { ROLE_MAP } from "../constant/role.js";
 
-let io; // global reference for Socket.io
-const roomState = new Map(); // ephemeral room state
+let io;
+const roomState = new Map();
 
+// ======= ICE Servers =======
 function getIceServersFromEnv() {
   const stun = (process.env.STUN_URLS || "").split(",").map(s => s.trim()).filter(Boolean);
   const turn = (process.env.TURN_URLS || "").split(",").map(s => s.trim()).filter(Boolean);
@@ -23,6 +25,7 @@ export function getIO() {
   return io;
 }
 
+// ======= Initialize Whiteboard Room =======
 export const initWhiteboardRTC = (sessionId, whiteboardId, createdBy) => {
   if (!roomState.has(sessionId)) {
     roomState.set(sessionId, {
@@ -36,6 +39,7 @@ export const initWhiteboardRTC = (sessionId, whiteboardId, createdBy) => {
   return roomState.get(sessionId);
 };
 
+// ======= Setup Socket.io =======
 export default function setupWebRTC(server) {
   io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
 
@@ -57,7 +61,6 @@ export default function setupWebRTC(server) {
         const session = await LiveSession.findById(sessionId);
         if (!session) return socket.emit("error_message", "Session not found");
 
-        // Private session validation
         if (session.isPrivate && !session.allowedUsers.includes(userId)) {
           return socket.emit("error_message", "You are not allowed to join this private session");
         }
@@ -75,13 +78,13 @@ export default function setupWebRTC(server) {
         socket.data = { sessionId, userId, role: userRole };
         socket.join(sessionId);
 
+        // ======= Streamer vs Viewer =======
         if (userRole === ROLE_MAP.STREAMER) {
           if (state.streamerSocketId && state.streamerSocketId !== socket.id) {
             return socket.emit("error_message", "Streamer already connected");
           }
           state.streamerSocketId = socket.id;
           socket.emit("joined_room", { as: "STREAMER", sessionId });
-
         } else {
           const activeCount = state.viewers.size + (state.streamerSocketId ? 1 : 0);
           if (activeCount >= session.maxParticipants) {
@@ -107,7 +110,19 @@ export default function setupWebRTC(server) {
           }
         }
 
-        // Update peak participants
+        // ======= Whiteboard participant add =======
+        if (state.whiteboardId) {
+          const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
+          if (wb) {
+            const alreadyJoined = wb.participants.find(p => p.user.toString() === userId);
+            if (!alreadyJoined) {
+              wb.participants.push({ user: userId, role: userRole === ROLE_MAP.STREAMER ? "editor" : "viewer" });
+              await wb.save();
+            }
+          }
+        }
+
+        // ======= Peak participants update =======
         const currentParticipants = state.viewers.size + (state.streamerSocketId ? 1 : 0);
         if ((session.peakParticipants || 0) < currentParticipants) {
           session.peakParticipants = currentParticipants;
@@ -167,6 +182,55 @@ export default function setupWebRTC(server) {
       safeEmit(targetSocketId, "ice-candidate", { from: socket.id, candidate });
     });
 
+    // ======= Whiteboard Drawing / Erasing =======
+    socket.on("whiteboard_draw", async ({ sessionId, drawData }) => {
+      const state = roomState.get(sessionId);
+      if (!state) return;
+      const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
+      if (!wb) return;
+
+      wb.canvasData = { ...wb.canvasData, ...drawData };
+      wb.totalDrawActions = (wb.totalDrawActions || 0) + 1;
+      wb.lastActivity = new Date();
+      await wb.save();
+
+      socket.to(sessionId).emit("whiteboard_draw", { userId: state.sockets.get(socket.id).userId, drawData });
+    });
+
+    socket.on("whiteboard_erase", async ({ sessionId, eraseData }) => {
+      const state = roomState.get(sessionId);
+      if (!state) return;
+      const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
+      if (!wb) return;
+
+      wb.totalErases = (wb.totalErases || 0) + 1;
+      wb.lastActivity = new Date();
+      await wb.save();
+
+      socket.to(sessionId).emit("whiteboard_erase", { userId: state.sockets.get(socket.id).userId, eraseData });
+    });
+
+    // ======= Cursor update =======
+    socket.on("cursor_update", ({ sessionId, position }) => {
+      const state = roomState.get(sessionId);
+      if (!state) return;
+      socket.to(sessionId).emit("cursor_update", { userId: state.sockets.get(socket.id).userId, position });
+    });
+
+    // ======= Late joiner sync =======
+    socket.on("whiteboard_state_request", async ({ sessionId }) => {
+      const state = roomState.get(sessionId);
+      if (!state) return;
+      const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
+      if (!wb) return;
+
+      socket.emit("whiteboard_state_sync", {
+        canvasData: wb.canvasData,
+        participants: wb.participants,
+        versionHistory: wb.versionHistory,
+      });
+    });
+
     // ======= Leave / Disconnect =======
     socket.on("leave_room", async ({ sessionId }) => {
       await cleanupSocketFromRoom(io, socket, sessionId);
@@ -206,6 +270,15 @@ async function cleanupSocketFromRoom(io, socket, sessionId) {
 
   const meta = state.sockets.get(socket.id);
   if (!meta) return;
+
+  // ======= Whiteboard cleanup =======
+  if (state.whiteboardId) {
+    const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
+    if (wb) {
+      wb.participants = wb.participants.filter(p => p.user.toString() !== meta.userId);
+      await wb.save();
+    }
+  }
 
   if (meta.role !== ROLE_MAP.STREAMER) {
     try { await LiveSessionParticipant.deleteOne({ socketId: socket.id }); } 

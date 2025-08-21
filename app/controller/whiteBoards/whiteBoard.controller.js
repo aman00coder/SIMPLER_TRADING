@@ -387,24 +387,26 @@ export const updateWhiteBoard = async (req, res) => {
     const updatedBy = req.tokenData?.userId;
     const userRole = req.tokenData?.role;
 
-    if (!whiteboardId) return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
+    if (!whiteboardId)
+      return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
 
     const query = isObjectId(whiteboardId)
       ? { _id: new mongoose.Types.ObjectId(whiteboardId) }
       : { whiteboardId };
 
     const existingWhiteboard = await commonServices.findOne(whiteBoardModel, query);
-    if (!existingWhiteboard) return sendErrorResponse(res, errorEn.WHITEBOARD_NOT_FOUND, HttpStatus.NOT_FOUND);
+    if (!existingWhiteboard)
+      return sendErrorResponse(res, errorEn.WHITEBOARD_NOT_FOUND, HttpStatus.NOT_FOUND);
 
     // permission checks
-    if (userRole === 3) return sendErrorResponse(res, errorEn.WHITEBOARD_ACCESS_STUDENT_DENIED, HttpStatus.FORBIDDEN);
-    if (userRole === 2 && ![1, 2].includes(existingWhiteboard.createdByRole)) {
+    if (userRole === 3)
+      return sendErrorResponse(res, errorEn.WHITEBOARD_ACCESS_STUDENT_DENIED, HttpStatus.FORBIDDEN);
+    if (userRole === 2 && ![1, 2].includes(existingWhiteboard.createdByRole))
       return sendErrorResponse(res, errorEn.WHITEBOARD_ACCESS_TEACHER_DENIED, HttpStatus.FORBIDDEN);
-    }
 
     const body = { ...req.body };
 
-    // parse incoming fields or fallback
+    // Helper to parse JSON fields or fallback to existing
     const parseOrExisting = (key, fallback) => {
       const val = body[key];
       if (val === undefined) return fallback;
@@ -412,7 +414,8 @@ export const updateWhiteBoard = async (req, res) => {
       return parsed === null ? fallback : parsed;
     };
 
-    let participantsRaw = parseOrExisting("participants", existingWhiteboard.participants);
+    // Parse fields
+    const participantsRaw = parseOrExisting("participants", existingWhiteboard.participants);
     const canvasData = parseOrExisting("canvasData", existingWhiteboard.canvasData);
     const liveStream = parseOrExisting("liveStream", existingWhiteboard.liveStream);
     const chatHistoryRaw = parseOrExisting("chatHistory", existingWhiteboard.chatHistory);
@@ -422,6 +425,7 @@ export const updateWhiteBoard = async (req, res) => {
     const whiteboardUrlFromBody = parseOrExisting("whiteboardUrl", existingWhiteboard.whiteboardUrl);
     const recordingUrlFromBody = parseOrExisting("recordingUrl", existingWhiteboard.recordingUrl);
 
+    // boolean / numeric fields
     const isActive = toBoolean(body.isActive, existingWhiteboard.isActive);
     const isPublic = toBoolean(body.isPublic, existingWhiteboard.isPublic);
     const passwordProtected = toBoolean(body.passwordProtected, existingWhiteboard.passwordProtected);
@@ -446,7 +450,7 @@ export const updateWhiteBoard = async (req, res) => {
     const files = dedupeFiles([...filesFromBody, ...uploadedFiles]);
 
     // convert ids
-    let participants = convertObjectIdArray(participantsRaw, "user");
+    const participants = convertObjectIdArray(participantsRaw, "user");
     const chatHistory = convertObjectIdArray(chatHistoryRaw, "sender");
     const versionHistory = convertObjectIdArray(versionHistoryRaw, "updatedBy");
 
@@ -455,6 +459,7 @@ export const updateWhiteBoard = async (req, res) => {
       participants.push({ user: new mongoose.Types.ObjectId(existingWhiteboard.createdBy), role: "owner" });
     }
 
+    // clonedFrom
     const clonedFrom = body.clonedFrom && isObjectId(body.clonedFrom)
       ? new mongoose.Types.ObjectId(body.clonedFrom)
       : existingWhiteboard.clonedFrom || null;
@@ -479,7 +484,7 @@ export const updateWhiteBoard = async (req, res) => {
       whiteboardPassword = null;
     }
 
-    // Dates & numbers fallback
+    // Dates & counters fallback
     const lastActivity = body.lastActivity ? new Date(body.lastActivity) : existingWhiteboard.lastActivity;
     const totalEdits = body.totalEdits !== undefined ? toNumber(body.totalEdits, existingWhiteboard.totalEdits) : existingWhiteboard.totalEdits;
     const totalMessages = body.totalMessages !== undefined ? toNumber(body.totalMessages, existingWhiteboard.totalMessages) : existingWhiteboard.totalMessages;
@@ -524,8 +529,13 @@ export const updateWhiteBoard = async (req, res) => {
       deleteRemovedFiles(existingWhiteboard.files || [], files),
     ]);
 
-    const updatedWhiteboard = await commonServices.findOneAndUpdate(whiteBoardModel, query, dataToUpdate);
-    if (!updatedWhiteboard) return sendErrorResponse(res, errorEn.FAILED_TO_UPDATE, HttpStatus.CONFLICT);
+    // update in DB
+    const updatedWhiteboard = await commonServices.findOneAndUpdate(
+      whiteBoardModel, query, dataToUpdate, { new: true }
+    );
+
+    if (!updatedWhiteboard)
+      return sendErrorResponse(res, errorEn.FAILED_TO_UPDATE, HttpStatus.CONFLICT);
 
     // emit to socket
     if (io && updatedWhiteboard.whiteboardId) {
@@ -533,10 +543,12 @@ export const updateWhiteBoard = async (req, res) => {
         whiteboardId: updatedWhiteboard.whiteboardId,
         canvasData: updatedWhiteboard.canvasData,
         participants: updatedWhiteboard.participants,
-        files: updatedWhiteboard.files
+        files: updatedWhiteboard.files,
+        recordingUrl: updatedWhiteboard.recordingUrl
       });
     }
 
+    // remove sensitive fields
     const safeResponse = updatedWhiteboard.toObject();
     delete safeResponse.boardPassword;
     delete safeResponse.whiteboardPassword;
@@ -548,6 +560,7 @@ export const updateWhiteBoard = async (req, res) => {
     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
+
 
 
 /* =======================
