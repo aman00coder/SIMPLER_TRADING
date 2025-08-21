@@ -2,7 +2,7 @@ import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
 import LiveSession from "../model/liveSessions/liveeSession.model.js";
 import LiveSessionParticipant from "../model/liveSessionParticipant/liveSessionParticipant.model.js";
-import whiteboardModel from "../model/whiteboard/whiteboard.model.js";
+import whiteboardModel from "../model/whiteBoards/whiteBoard.model.js";
 import { ROLE_MAP } from "../constant/role.js";
 
 let io;
