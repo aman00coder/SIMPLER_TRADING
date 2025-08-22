@@ -7,7 +7,7 @@ import { sendSuccessResponse, sendErrorResponse } from "../../responses/response
 import { errorEn, successEn } from "../../responses/message.js";
 import { genPassword } from "../../utils/password.js";
 import { deleteFileFromS3 } from "../../middleware/aws.s3.js";
-import { initWhiteboardRTC } from "../../services/socket.webrtc.js"; 
+import { initWhiteboardRTC } from "../../services/socket.integrated.js"; 
 
 /* =======================
    Utilities (compact & fast)

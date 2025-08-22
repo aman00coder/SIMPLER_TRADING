@@ -6,7 +6,7 @@ import whiteBoardModel from "../../model/whiteBoards/whiteBoard.model.js";
 import * as commonServices from "../../services/common.js";
 import { sendSuccessResponse, sendErrorResponse } from "../../responses/responses.js";
 import { errorEn, successEn } from "../../responses/message.js";
-import { getIO } from "../../services/socket.webrtc.js"; 
+import { getIO } from "../../services/socket.integrated.js"; 
 import { ROLE_MAP } from "../../constant/role.js";
 
 const buildUploadedFiles = (fileEntries = [], uploaderId) => {
