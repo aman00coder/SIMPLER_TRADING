@@ -21,6 +21,39 @@ function getIceServersFromEnv() {
   return servers;
 }
 
+// ======= Flush Helpers =======
+// Throttled DB flush
+async function flushCanvasOps(sessionId) {
+  const state = roomState.get(sessionId);
+  if (!state || !state.whiteboardId) return;
+  const ops = state.pendingOps || [];
+  if (!ops.length) return;
+  state.pendingOps = [];
+  clearTimeout(state.flushTimer);
+  state.flushTimer = null;
+
+  const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
+  if (!wb) return;
+  for (const op of ops) {
+    if (op.type === "draw") wb.totalDrawActions = (wb.totalDrawActions || 0) + 1;
+    if (op.type === "erase") wb.totalErases = (wb.totalErases || 0) + 1;
+    wb.undoStack = [...(wb.undoStack || []), op].slice(-500);
+    if (op.type === "draw" || op.type === "erase") wb.redoStack = [];
+    if (op.patch) wb.canvasData = { ...(wb.canvasData || {}), ...op.patch };
+  }
+  wb.lastActivity = new Date();
+  await wb.save();
+}
+
+function scheduleFlush(sessionId, op) {
+  const state = roomState.get(sessionId);
+  if (!state) return;
+  if (!state.pendingOps) state.pendingOps = [];
+  state.pendingOps.push(op);
+  if (state.flushTimer) return;
+  state.flushTimer = setTimeout(() => flushCanvasOps(sessionId).catch(() => {}), 2000);
+}
+
 // ======= Initialize Whiteboard Room =======
 export const initWhiteboardRTC = (sessionId, whiteboardId, createdBy) => {
   if (!roomState.has(sessionId)) {
@@ -202,27 +235,58 @@ export default function setupIntegratedSocket(server) {
     // =========================
     // ===== WHITEBOARD EVENTS =====
     // =========================
-    socket.on("whiteboard_draw", async ({ sessionId, drawData }) => {
+    // ===== WHITEBOARD: DRAW =====
+    socket.on("whiteboard_draw", ({ sessionId, drawData, patch }) => {
       const state = roomState.get(sessionId);
       if (!state || !state.whiteboardId) return;
-      const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
-      if (!wb) return;
-      wb.canvasData = { ...wb.canvasData, ...drawData };
-      wb.totalDrawActions = (wb.totalDrawActions || 0) + 1;
-      wb.lastActivity = new Date();
-      await wb.save();
-      socket.to(sessionId).emit("whiteboard_draw", { userId: state.sockets.get(socket.id).userId, drawData });
+      const meta = state.sockets.get(socket.id);
+      if (!meta) return;
+      socket.to(sessionId).emit("whiteboard_draw", { userId: meta.userId, drawData });
+      scheduleFlush(sessionId, { type: "draw", payload: drawData, patch, at: new Date() });
     });
 
-    socket.on("whiteboard_erase", async ({ sessionId, eraseData }) => {
+    // ===== WHITEBOARD: ERASE =====
+    socket.on("whiteboard_erase", ({ sessionId, eraseData, patch }) => {
+      const state = roomState.get(sessionId);
+      if (!state || !state.whiteboardId) return;
+      const meta = state.sockets.get(socket.id);
+      if (!meta) return;
+      socket.to(sessionId).emit("whiteboard_erase", { userId: meta.userId, eraseData });
+      scheduleFlush(sessionId, { type: "erase", payload: eraseData, patch, at: new Date() });
+    });
+
+    // ===== WHITEBOARD: UNDO =====
+    socket.on("whiteboard_undo", async ({ sessionId }) => {
       const state = roomState.get(sessionId);
       if (!state || !state.whiteboardId) return;
       const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
       if (!wb) return;
-      wb.totalErases = (wb.totalErases || 0) + 1;
+      const last = (wb.undoStack || []).pop();
+      if (!last) return;
+      wb.redoStack = [...(wb.redoStack || []), last].slice(-500);
       wb.lastActivity = new Date();
       await wb.save();
-      socket.to(sessionId).emit("whiteboard_erase", { userId: state.sockets.get(socket.id).userId, eraseData });
+      io.to(sessionId).emit("whiteboard_undo_applied", { last });
+    });
+
+    // ===== WHITEBOARD: REDO =====
+    socket.on("whiteboard_redo", async ({ sessionId }) => {
+      const state = roomState.get(sessionId);
+      if (!state || !state.whiteboardId) return;
+      const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
+      if (!wb) return;
+      const last = (wb.redoStack || []).pop();
+      if (!last) return;
+      wb.undoStack = [...(wb.undoStack || []), last].slice(-500);
+      wb.lastActivity = new Date();
+      await wb.save();
+      io.to(sessionId).emit("whiteboard_redo_applied", { last });
+    });
+
+    // ===== WHITEBOARD: SAVE CANVAS =====
+    socket.on("whiteboard_save_canvas", async ({ sessionId }) => {
+      await flushCanvasOps(sessionId).catch(() => {});
+      socket.emit("whiteboard_saved");
     });
 
     socket.on("cursor_update", ({ sessionId, position }) => {

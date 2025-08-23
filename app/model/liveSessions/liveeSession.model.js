@@ -31,8 +31,8 @@ const liveSessionSchema = new mongoose.Schema({
     description: String,
 
     // 🔹 Session Timing
-    scheduledStartTime: { type: Date }, // when mentor schedules session
-    actualStartTime: { type: Date },    // when session really starts
+    scheduledStartTime: { type: Date }, 
+    actualStartTime: { type: Date },    
     endTime: { type: Date },
 
     // 🔹 Participants

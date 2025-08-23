@@ -71,30 +71,33 @@ export const errorEn = {
   IMAGE_DELETE_FAILED: "🖼️ Failed to delete image from storage.",
   INTERNAL_SERVER_ERROR: "🔥 Internal server error. Please try again later.",
 
-// ==================== ❌ WHITEBOARD ERRORS ====================
-WHITEBOARD_TITLE_REQUIRED: "⚠️ Title is required.",
-WHITEBOARD_DESCRIPTION_REQUIRED: "⚠️ Description is required.",
-WHITEBOARD_CREATED_BY_REQUIRED: "⚠️ CreatedBy (userId) is required.",
-WHITEBOARD_ACCESS_TYPE_REQUIRED: "⚠️ Valid accessType is required (public | private | restricted).",
-WHITEBOARD_STATUS_REQUIRED: "⚠️ Valid status is required (active | archived).",
-WHITEBOARD_CANVAS_REQUIRED: "⚠️ Canvas data is required.",
-WHITEBOARD_CHAT_ENABLED_REQUIRED: "⚠️ Chat enabled flag is required.",
-WHITEBOARD_LIVESTREAM_REQUIRED: "⚠️ Live stream details (isLive, streamUrl) are required.",
-WHITEBOARD_SESSION_ID_REQUIRED: "⚠️ currentSessionId is required for live sessions.",
-WHITEBOARD_PERMISSIONS_REQUIRED: "⚠️ Permissions array is required.",
-WHITEBOARD_MAX_PARTICIPANTS_REQUIRED: "⚠️ Max participants is required and must be a number.",
-WHITEBOARD_PARTICIPANTS_REQUIRED: "⚠️ At least one participant is required for the whiteboard.",
-WHITEBOARD_NOT_CREATED: "❌ Whiteboard could not be created.",
-WHITEBOARD_NOT_FOUND: "❌ Whiteboard not found.",
-NO_DELETED_WHITEBOARD: "ℹ️ No deleted whiteboard found to restore.",
-FAILED_TO_UPDATE: "❌ Failed to update data.",
-
+  // ==================== ❌ WHITEBOARD ERRORS ====================
+  WHITEBOARD_TITLE_REQUIRED: "⚠️ Title is required.",
+  WHITEBOARD_DESCRIPTION_REQUIRED: "⚠️ Description is required.",
+  WHITEBOARD_CREATED_BY_REQUIRED: "⚠️ CreatedBy (userId) is required.",
+  WHITEBOARD_ACCESS_TYPE_REQUIRED: "⚠️ Valid accessType is required (public | private | restricted).",
+  WHITEBOARD_STATUS_REQUIRED: "⚠️ Valid status is required (active | archived).",
+  WHITEBOARD_CANVAS_REQUIRED: "⚠️ Canvas data is required.",
+  WHITEBOARD_CHAT_ENABLED_REQUIRED: "⚠️ Chat enabled flag is required.",
+  WHITEBOARD_LIVESTREAM_REQUIRED: "⚠️ Live stream details (isLive, streamUrl) are required.",
+  WHITEBOARD_SESSION_ID_REQUIRED: "⚠️ currentSessionId is required for live sessions.",
+  WHITEBOARD_PERMISSIONS_REQUIRED: "⚠️ Permissions array is required.",
+  WHITEBOARD_MAX_PARTICIPANTS_REQUIRED: "⚠️ Max participants is required and must be a number.",
+  WHITEBOARD_PARTICIPANTS_REQUIRED: "⚠️ At least one participant is required for the whiteboard.",
+  WHITEBOARD_NOT_CREATED: "❌ Whiteboard could not be created.",
+  WHITEBOARD_NOT_FOUND: "❌ Whiteboard not found.",
+  NO_DELETED_WHITEBOARD: "ℹ️ No deleted whiteboard found to restore.",
+  FAILED_TO_UPDATE: "❌ Failed to update data.",
 
   // 🔒 WHITEBOARD ACCESS ERRORS
   WHITEBOARD_ACCESS_STUDENT_DENIED: "🚫 Access denied: Students cannot update whiteboards.",
   WHITEBOARD_ACCESS_TEACHER_DENIED: "🚫 Access denied: You can only update whiteboards created by admin or teacher.",
   WHITEBOARD_SESSIONID_REQUIRED: "⚠️ currentSessionId is required for live sessions.",
   WHITEBOARD_PASSWORD_REQUIRED:"🔒 Whiteboard password is required to create a secure session.",
+
+  // 🚫 Role restriction
+  FORBIDDEN: "🚫 Access denied: Your role is not allowed to perform this action.",
+
   // ==================== ❌ LIVE SESSION ERRORS ====================
   LIVE_SESSION_ALREADY_EXISTS: "🚫 Live session with this room code already exists.",
   LIVE_SESSION_NOT_FOUND: "❌ Live session not found.",

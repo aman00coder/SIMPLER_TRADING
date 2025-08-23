@@ -37,9 +37,10 @@ export const startLiveSession = async (req, res) => {
       return sendErrorResponse(res, errorEn.LIVE_SESSION_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
     }
 
+    // Step 1: Create whiteboard
     const whiteboard = await whiteBoardModel.create({
       whiteboardId: uuidv4(),
-      title: title,
+      title,
       description: description || "",
       createdBy: mentorId,
       createdByRole: ROLE_MAP.STREAMER,
@@ -56,7 +57,7 @@ export const startLiveSession = async (req, res) => {
 
     // Step 2: Save live session with linked whiteboard
     const sessionId = uuidv4();
-    const dataToSave = {
+    const liveSession = await liveSessionModel.create({
       streamerId: mentorId,
       streamerRole: ROLE_MAP.STREAMER,
       sessionId,
@@ -73,11 +74,13 @@ export const startLiveSession = async (req, res) => {
       maxParticipants: maxParticipants || 100,
       isPrivate: isPrivate || false,
       status: "ACTIVE"
-    };
+    });
 
-    const liveSession = await commonServices.create(liveSessionModel, dataToSave);
+    // ✅ Step 3: Update whiteboard with sessionId (bi-directional link)
+    whiteboard.liveSessionId = liveSession._id;
+    await whiteboard.save();
 
-    // Step 3: Notify socket layer
+    // Step 4: Notify socket layer
     io.emit("session_started", {
       sessionId,
       mentorId,
@@ -94,6 +97,7 @@ export const startLiveSession = async (req, res) => {
     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
+
 
 // =========================
 // Pause Live Session
