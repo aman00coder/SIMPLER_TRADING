@@ -311,41 +311,54 @@ export default function setupIntegratedSocket(server) {
     // ===== LEAVE / DISCONNECT =====
     // =========================
     const cleanupSocketFromRoom = async () => {
-      const sessionId = socket.data?.sessionId;
-      if (!sessionId) return;
-      const state = roomState.get(sessionId);
-      if (!state) return;
+        const sessionId = socket.data?.sessionId;
+        if (!sessionId) return;
+        const state = roomState.get(sessionId);
+        if (!state) return;
 
-      const meta = state.sockets.get(socket.id);
-      if (!meta) return;
+        const meta = state.sockets.get(socket.id);
+        if (!meta) return;
 
-      // Whiteboard cleanup
-      if (state.whiteboardId) {
-        const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
-        if (wb) {
-          wb.participants = wb.participants.filter(p => p.user.toString() !== meta.userId);
-          await wb.save();
+        // Whiteboard cleanup (soft leave)
+        if (state.whiteboardId) {
+            const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
+            if (wb) {
+                const participant = wb.participants.find(p => p.user.toString() === meta.userId);
+                if (participant) {
+                    participant.status = "LEFT";
+                    participant.leftAt = new Date();
+                }
+                await wb.save();
+            }
         }
-      }
 
-      if (meta.role !== ROLE_MAP.STREAMER) {
-        try { await liveSessionParticipant.deleteOne({ socketId: socket.id }); } 
-        catch (e) { console.error("cleanup deleteOne error:", e.message); }
-        state.viewers.delete(socket.id);
-        io.to(sessionId).emit("user_left", { userId: meta.userId, socketId: socket.id });
-      } else {
-        state.streamerSocketId = null;
-        const session = await liveSession.findById(sessionId);
-        if (session) {
-          session.status = "PAUSED";
-          await session.save();
+        // Live session participant update (soft leave)
+        if (meta.role !== ROLE_MAP.STREAMER) {
+            try {
+                const participant = await liveSessionParticipant.findOne({ socketId: socket.id });
+                if (participant) {
+                    participant.status = "LEFT";
+                    participant.leftAt = new Date();
+                    participant.isActiveDevice = false;
+                    await participant.save();
+                }
+            } catch (e) { console.error("cleanup update error:", e.message); }
+            state.viewers.delete(socket.id);
+            io.to(sessionId).emit("user_left", { userId: meta.userId, socketId: socket.id });
+        } else {
+            state.streamerSocketId = null;
+            const session = await liveSession.findById(sessionId);
+            if (session) {
+                session.status = "PAUSED";
+                await session.save();
+            }
+            io.to(sessionId).emit("session_paused_or_ended_by_streamer");
         }
-        io.to(sessionId).emit("session_paused_or_ended_by_streamer");
-      }
 
-      state.sockets.delete(socket.id);
-      socket.leave(sessionId);
+        state.sockets.delete(socket.id);
+        socket.leave(sessionId);
     };
+
 
     socket.on("leave_room", cleanupSocketFromRoom);
     socket.on("disconnect", cleanupSocketFromRoom);
