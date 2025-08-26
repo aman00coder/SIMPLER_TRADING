@@ -9,76 +9,76 @@ import { errorEn, successEn } from "../../responses/message.js";
 import { getIO } from "../../services/socket.integrated.js"; 
 import { ROLE_MAP } from "../../constant/role.js";
 
-
-const buildUploadedFiles = (fileEntries = [], uploaderId) => {
-  if (!Array.isArray(fileEntries) || fileEntries.length === 0) return [];
-  return fileEntries.map((f) => ({
-    fileName: f.originalname,
-    fileUrl: f.location || f.path,
-    fileType: f.mimetype,
-    uploadedBy: uploaderId,
-    uploadedAt: new Date(),
-  }));
+// 🔹 Helper: secure random alphanumeric roomCode
+const generateRoomCode = () => {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 };
+
 
 export const startLiveSession = async (req, res) => {
   try {
     const io = getIO(); 
 
-    const { roomCode, title, description, endTime, maxParticipants, isPrivate } = req.body;
+    const { title, description, endTime, maxParticipants, isPrivate } = req.body;
     const mentorId = req.tokenData?.userId;
 
-    if (!mentorId || !roomCode || !title) {
+    if (!mentorId || !title) {
       return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
     }
 
+    // 🔹 Backend-generated roomCode
+    const roomCode = generateRoomCode();
+
+    // Check duplicate (avoid same active roomCode)
     const existingSession = await liveSessionModel.findOne({ roomCode, status: "ACTIVE" });
     if (existingSession) {
       return sendErrorResponse(res, errorEn.LIVE_SESSION_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
     }
 
-    // Step 1: Create whiteboard
-    const whiteboard = await whiteBoardModel.create({
-      whiteboardId: uuidv4(),
-      title,
-      description: description || "",
-      createdBy: mentorId,
-      createdByRole: ROLE_MAP.STREAMER,
-      participants: [
-        {
-          user: mentorId,
-          role: "owner",
-          joinedAt: new Date(),
-          lastActive: new Date(),
-          cursorPosition: {}
-        }
-      ]
-    });
-
-    // Step 2: Save live session with linked whiteboard
+    // Step 1: Create LiveSession first
     const sessionId = uuidv4();
     const liveSession = await liveSessionModel.create({
-      streamerId: mentorId,
-      streamerRole: ROLE_MAP.STREAMER,
-      sessionId,
-      roomCode,
-      title,
-      description,
-      actualStartTime: new Date(),
-      endTime,
-      participants: [],
-      allowedUsers: [],
-      whiteboardId: whiteboard._id, 
-      chatMessages: [],
-      recordingUrl: "",
-      maxParticipants: maxParticipants || 100,
-      isPrivate: isPrivate || false,
-      status: "ACTIVE"
+    streamerId: mentorId,
+    streamerRole: ROLE_MAP.STREAMER,
+    sessionId,
+    roomCode,
+    title,
+    description,
+    actualStartTime: new Date(),
+    endTime,
+    participants: [],
+    allowedUsers: [],
+    chatMessages: [],
+    recordingUrl: "",
+    maxParticipants: maxParticipants || 100,
+    isPrivate: isPrivate || false,
+    status: "ACTIVE"
     });
 
-    // ✅ Step 3: Update whiteboard with sessionId (bi-directional link)
-    whiteboard.liveSessionId = liveSession._id;
-    await whiteboard.save();
+    // Step 2: Create whiteboard linked with sessionId
+    const whiteboard = await whiteBoardModel.create({
+    whiteboardId: uuidv4(),
+    title,
+    description: description || "",
+    createdBy: mentorId,
+    createdByRole: ROLE_MAP.STREAMER,
+    liveSessionId: liveSession._id, // ✅ required field fulfilled
+    participants: [
+        {
+        user: mentorId,
+        role: "owner",
+        joinedAt: new Date(),
+        lastActive: new Date(),
+        cursorPosition: {}
+        }
+    ]
+    });
+
+    // Step 3: Update session with whiteboardId
+    liveSession.whiteboardId = whiteboard._id;
+    await liveSession.save();
+
 
     // Step 4: Notify socket layer
     io.emit("session_started", {
@@ -97,6 +97,7 @@ export const startLiveSession = async (req, res) => {
     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
+
 
 
 // =========================

@@ -1,5 +1,6 @@
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
+import mongoose from "mongoose";
 import liveSession from "../model/liveSessions/liveeSession.model.js";
 import liveSessionParticipant from "../model/liveSessionParticipant/liveSessionParticipant.model.js";
 import whiteboardModel from "../model/whiteBoards/whiteBoard.model.js";
@@ -7,9 +8,9 @@ import { ROLE_MAP } from "../constant/role.js";
 
 // ======= Global Variables =======
 let io;
-const roomState = new Map();
+const roomState = new Map(); // key: sessionId (string) -> { whiteboardId, createdBy, streamerSocketId, viewers: Set, sockets: Map, pendingOps, flushTimer }
 
-// ======= ICE Servers =======
+// ======= ICE Servers Helper =======
 function getIceServersFromEnv() {
   const stun = (process.env.STUN_URLS || "").split(",").map(s => s.trim()).filter(Boolean);
   const turn = (process.env.TURN_URLS || "").split(",").map(s => s.trim()).filter(Boolean);
@@ -21,8 +22,7 @@ function getIceServersFromEnv() {
   return servers;
 }
 
-// ======= Flush Helpers =======
-// Throttled DB flush
+// ======= Throttled Whiteboard DB flush =======
 async function flushCanvasOps(sessionId) {
   const state = roomState.get(sessionId);
   if (!state || !state.whiteboardId) return;
@@ -54,7 +54,7 @@ function scheduleFlush(sessionId, op) {
   state.flushTimer = setTimeout(() => flushCanvasOps(sessionId).catch(() => {}), 2000);
 }
 
-// ======= Initialize Whiteboard Room =======
+// ======= Initialize Whiteboard Room (used by controller when creating session) =======
 export const initWhiteboardRTC = (sessionId, whiteboardId, createdBy) => {
   if (!roomState.has(sessionId)) {
     roomState.set(sessionId, {
@@ -63,7 +63,13 @@ export const initWhiteboardRTC = (sessionId, whiteboardId, createdBy) => {
       streamerSocketId: null,
       viewers: new Set(),
       sockets: new Map(),
+      pendingOps: [],
+      flushTimer: null,
     });
+  } else {
+    const s = roomState.get(sessionId);
+    s.whiteboardId = s.whiteboardId || whiteboardId;
+    s.createdBy = s.createdBy || createdBy;
   }
   return roomState.get(sessionId);
 };
@@ -72,88 +78,148 @@ export const initWhiteboardRTC = (sessionId, whiteboardId, createdBy) => {
 export default function setupIntegratedSocket(server) {
   io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
 
+  // safeEmit helper
+  const safeEmit = (toSocketId, event, payload) => {
+    const s = io.sockets.sockets.get(toSocketId);
+    if (s) s.emit(event, payload);
+  };
+
   io.on("connection", (socket) => {
     console.log("New client connected:", socket.id);
-
-    const safeEmit = (toSocketId, event, payload) => {
-      const s = io.sockets.sockets.get(toSocketId);
-      if (s) s.emit(event, payload);
-    };
 
     // =========================
     // ===== JOIN ROOM ========
     // =========================
-    socket.on("join_room", async ({ token, sessionId }) => {
+    // Client should call after obtaining sessionId from POST /join-session (or can pass roomCode)
+    // We'll accept either: { token, sessionId } OR { token, roomCode }
+    socket.on("join_room", async ({ token, sessionId, roomCode }) => {
       try {
-        if (!token || !sessionId) return socket.emit("error_message", "Missing token or sessionId");
+        if (!token || (!sessionId && !roomCode)) return socket.emit("error_message", "Missing token or sessionId/roomCode");
 
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        // verify JWT
+        let decoded;
+        try {
+          decoded = jwt.verify(token, process.env.JWT_SECRET);
+        } catch (err) {
+          return socket.emit("error_message", "Invalid token");
+        }
         const userId = decoded.userId;
         const userRole = decoded.role;
 
-        const session = await liveSession.findById(sessionId);
-        if (!session) return socket.emit("error_message", "Session not found");
-
-        // Private session check
-        if (session.isPrivate && !session.allowedUsers.includes(userId)) {
-          return socket.emit("error_message", "You are not allowed to join this private session");
+        // Resolve session by sessionId or roomCode
+        let session;
+        if (sessionId) {
+          // sessionId may be Mongo _id or sessionId (uuid string)
+          if (mongoose.Types.ObjectId.isValid(sessionId)) {
+            session = await liveSession.findById(sessionId);
+          }
+          if (!session) session = await liveSession.findOne({ sessionId });
+        } else {
+          session = await liveSession.findOne({ roomCode });
         }
 
-        // Session status check
+        if (!session) return socket.emit("error_message", "Session not found");
+
+        // Check session status
         if (!["SCHEDULED", "ACTIVE", "PAUSED"].includes(session.status)) {
           return socket.emit("error_message", `Session is ${session.status}`);
         }
 
-        // Init roomState
-        if (!roomState.has(sessionId)) {
-          roomState.set(sessionId, { streamerSocketId: null, viewers: new Set(), sockets: new Map() });
+        // Private session check
+        if (session.isPrivate) {
+          const allowed = (Array.isArray(session.allowedUsers) && session.allowedUsers.some(u => u.toString() === userId));
+          if (!allowed) {
+            return socket.emit("error_message", "You are not allowed to join this private session");
+          }
         }
-        const state = roomState.get(sessionId);
-        state.sockets.set(socket.id, { userId, role: userRole });
-        socket.data = { sessionId, userId, role: userRole };
-        socket.join(sessionId);
 
-        // ===== Streamer / Viewer Logic =====
+        // Init or ensure roomState exists (use Mongo _id string as room key)
+        const sid = session._id.toString();
+        if (!roomState.has(sid)) {
+          roomState.set(sid, {
+            whiteboardId: session.whiteboardId || null,
+            createdBy: session.streamerId ? session.streamerId.toString() : null,
+            streamerSocketId: null,
+            viewers: new Set(),
+            sockets: new Map(),
+            pendingOps: [],
+            flushTimer: null,
+          });
+        }
+        const state = roomState.get(sid);
+
+        // Max participants check (count active participants in DB)
+        const activeCount = await liveSessionParticipant.countDocuments({ sessionId: session._id, status: { $ne: "LEFT" } });
+        if ((session.maxParticipants || 100) <= activeCount && userRole !== ROLE_MAP.STREAMER) {
+          return socket.emit("error_message", "Max participants limit reached");
+        }
+
+        // Check if user is banned (existing participant record with isBanned)
+        const existingParticipant = await liveSessionParticipant.findOne({ sessionId: session._id, userId });
+        if (existingParticipant && existingParticipant.isBanned) {
+          return socket.emit("error_message", "You are banned from this session");
+        }
+
+        // Save/update participant record (handle reconnects by userId)
+        let participant = existingParticipant;
+        if (!participant) {
+          participant = await liveSessionParticipant.create({
+            sessionId: session._id,
+            userId,
+            socketId: socket.id,
+            status: "JOINED",
+            isActiveDevice: true,
+            joinedAt: new Date()
+          });
+          // increment totalJoins (analytics)
+          session.totalJoins = (session.totalJoins || 0) + 1;
+          await session.save();
+        } else {
+          // update existing participant entry instead of creating duplicate
+          participant.socketId = socket.id;
+          participant.status = "JOINED";
+          participant.isActiveDevice = true;
+          participant.joinedAt = new Date();
+          participant.leftAt = null;
+          await participant.save();
+        }
+
+        // store socket metadata & join room
+        state.sockets.set(socket.id, { userId, role: userRole });
+        socket.data = { sessionId: sid, userId, role: userRole };
+        socket.join(sid);
+
+        // Streamer vs viewer handling
         if (userRole === ROLE_MAP.STREAMER) {
           if (state.streamerSocketId && state.streamerSocketId !== socket.id) {
+            // another streamer already connected
             return socket.emit("error_message", "Streamer already connected");
           }
           state.streamerSocketId = socket.id;
-          socket.emit("joined_room", { as: "STREAMER", sessionId });
+          socket.emit("joined_room", { as: "STREAMER", sessionId: sid, roomCode: session.roomCode });
         } else {
-          // Viewer logic
-          const participant = await liveSessionParticipant.findOne({ sessionId, userId });
-          if (!participant) {
-            await liveSessionParticipant.create({ sessionId, userId, socketId: socket.id, joinedAt: new Date() });
-            session.totalJoins = (session.totalJoins || 0) + 1;
-            await session.save();
-          } else {
-            participant.socketId = socket.id;
-            participant.joinedAt = new Date();
-            await participant.save();
-          }
-
           state.viewers.add(socket.id);
-          socket.emit("joined_room", { as: "VIEWER", sessionId });
+          socket.emit("joined_room", { as: "VIEWER", sessionId: sid, roomCode: session.roomCode, whiteboardId: state.whiteboardId });
 
+          // notify streamer that viewer is ready (if streamer connected)
           if (state.streamerSocketId) {
             safeEmit(state.streamerSocketId, "viewer_ready", { viewerSocketId: socket.id, viewerUserId: userId });
           }
         }
 
-        // ===== Whiteboard participant add =====
+        // Add to whiteboard participants if available (avoid duplicates)
         if (state.whiteboardId) {
           const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
           if (wb) {
-            const alreadyJoined = wb.participants.find(p => p.user.toString() === userId);
+            const alreadyJoined = wb.participants && wb.participants.find(p => p.user.toString() === userId);
             if (!alreadyJoined) {
-              wb.participants.push({ user: userId, role: userRole === ROLE_MAP.STREAMER ? "editor" : "viewer" });
+              wb.participants.push({ user: userId, role: userRole === ROLE_MAP.STREAMER ? "editor" : "viewer", joinedAt: new Date() });
               await wb.save();
             }
           }
         }
 
-        // Peak participants
+        // update peak participants if needed
         const currentParticipants = state.viewers.size + (state.streamerSocketId ? 1 : 0);
         if ((session.peakParticipants || 0) < currentParticipants) {
           session.peakParticipants = currentParticipants;
@@ -161,7 +227,7 @@ export default function setupIntegratedSocket(server) {
         }
 
       } catch (err) {
-        console.error("join_room error:", err.message);
+        console.error("join_room error:", err);
         socket.emit("error_message", "Invalid token/session");
       }
     });
@@ -169,51 +235,66 @@ export default function setupIntegratedSocket(server) {
     // =========================
     // ===== CHAT MESSAGE =====
     // =========================
-    socket.on("chat_message", ({ sessionId, message }) => {
-      const state = roomState.get(sessionId);
-      if (!state) return;
-      const meta = state.sockets.get(socket.id);
-      if (!meta) return;
-      io.to(sessionId).emit("chat_message", { userId: meta.userId, message, socketId: socket.id });
+    // Emits to room and (optionally) persist via ChatMessage controller if you have one
+    socket.on("chat_message", async ({ sessionId, message }) => {
+      try {
+        const state = roomState.get(sessionId);
+        if (!state) return;
+        const meta = state.sockets.get(socket.id);
+        if (!meta) return;
+        // broadcast
+        io.to(sessionId).emit("chat_message", { userId: meta.userId, message, socketId: socket.id, at: new Date() });
+        // (optional) persist: your existing ChatMessage model/controller can handle saving
+      } catch (e) {
+        console.error("chat_message error:", e.message);
+      }
     });
 
     // =========================
     // ===== STREAMER CONTROLS =====
     // =========================
     socket.on("streamer_start", async ({ sessionId }) => {
-      const session = await liveSession.findById(sessionId);
-      if (!session) return;
-      session.status = "ACTIVE";
-      session.actualStartTime = new Date();
-      await session.save();
-      io.to(sessionId).emit("streamer_started", { sessionId });
+      try {
+        const session = await liveSession.findById(sessionId);
+        if (!session) return;
+        session.status = "ACTIVE";
+        session.actualStartTime = new Date();
+        await session.save();
+        io.to(sessionId).emit("streamer_started", { sessionId });
+      } catch (e) { console.error(e.message); }
     });
 
     socket.on("streamer_pause", async ({ sessionId }) => {
-      const session = await liveSession.findById(sessionId);
-      if (!session) return;
-      session.status = "PAUSED";
-      await session.save();
-      io.to(sessionId).emit("streamer_paused", { sessionId });
+      try {
+        const session = await liveSession.findById(sessionId);
+        if (!session) return;
+        session.status = "PAUSED";
+        await session.save();
+        io.to(sessionId).emit("streamer_paused", { sessionId });
+      } catch (e) { console.error(e.message); }
     });
 
     socket.on("streamer_resume", async ({ sessionId }) => {
-      const session = await liveSession.findById(sessionId);
-      if (!session) return;
-      session.status = "ACTIVE";
-      await session.save();
-      io.to(sessionId).emit("streamer_resumed", { sessionId });
+      try {
+        const session = await liveSession.findById(sessionId);
+        if (!session) return;
+        session.status = "ACTIVE";
+        await session.save();
+        io.to(sessionId).emit("streamer_resumed", { sessionId });
+      } catch (e) { console.error(e.message); }
     });
 
     // =========================
     // ===== WEBRTC SIGNALING =====
     // =========================
+    // Streamer sends offer to a target viewer socket id
     socket.on("offer", ({ sessionId, targetSocketId, sdp }) => {
       const state = roomState.get(sessionId);
       if (!state || state.streamerSocketId !== socket.id) return;
       safeEmit(targetSocketId, "offer", { from: socket.id, sdp });
     });
 
+    // Viewer sends answer back to streamer
     socket.on("answer", ({ sessionId, sdp }) => {
       const state = roomState.get(sessionId);
       if (!state) return;
@@ -222,6 +303,7 @@ export default function setupIntegratedSocket(server) {
       safeEmit(state.streamerSocketId, "answer", { from: socket.id, sdp });
     });
 
+    // ICE candidate exchange (both directions)
     socket.on("ice-candidate", ({ sessionId, targetSocketId, candidate }) => {
       const state = roomState.get(sessionId);
       if (!state) return;
@@ -235,7 +317,6 @@ export default function setupIntegratedSocket(server) {
     // =========================
     // ===== WHITEBOARD EVENTS =====
     // =========================
-    // ===== WHITEBOARD: DRAW =====
     socket.on("whiteboard_draw", ({ sessionId, drawData, patch }) => {
       const state = roomState.get(sessionId);
       if (!state || !state.whiteboardId) return;
@@ -245,7 +326,6 @@ export default function setupIntegratedSocket(server) {
       scheduleFlush(sessionId, { type: "draw", payload: drawData, patch, at: new Date() });
     });
 
-    // ===== WHITEBOARD: ERASE =====
     socket.on("whiteboard_erase", ({ sessionId, eraseData, patch }) => {
       const state = roomState.get(sessionId);
       if (!state || !state.whiteboardId) return;
@@ -255,7 +335,6 @@ export default function setupIntegratedSocket(server) {
       scheduleFlush(sessionId, { type: "erase", payload: eraseData, patch, at: new Date() });
     });
 
-    // ===== WHITEBOARD: UNDO =====
     socket.on("whiteboard_undo", async ({ sessionId }) => {
       const state = roomState.get(sessionId);
       if (!state || !state.whiteboardId) return;
@@ -269,7 +348,6 @@ export default function setupIntegratedSocket(server) {
       io.to(sessionId).emit("whiteboard_undo_applied", { last });
     });
 
-    // ===== WHITEBOARD: REDO =====
     socket.on("whiteboard_redo", async ({ sessionId }) => {
       const state = roomState.get(sessionId);
       if (!state || !state.whiteboardId) return;
@@ -283,7 +361,6 @@ export default function setupIntegratedSocket(server) {
       io.to(sessionId).emit("whiteboard_redo_applied", { last });
     });
 
-    // ===== WHITEBOARD: SAVE CANVAS =====
     socket.on("whiteboard_save_canvas", async ({ sessionId }) => {
       await flushCanvasOps(sessionId).catch(() => {});
       socket.emit("whiteboard_saved");
@@ -292,7 +369,9 @@ export default function setupIntegratedSocket(server) {
     socket.on("cursor_update", ({ sessionId, position }) => {
       const state = roomState.get(sessionId);
       if (!state) return;
-      socket.to(sessionId).emit("cursor_update", { userId: state.sockets.get(socket.id).userId, position });
+      const meta = state.sockets.get(socket.id);
+      if (!meta) return;
+      socket.to(sessionId).emit("cursor_update", { userId: meta.userId, position });
     });
 
     socket.on("whiteboard_state_request", async ({ sessionId }) => {
@@ -311,54 +390,61 @@ export default function setupIntegratedSocket(server) {
     // ===== LEAVE / DISCONNECT =====
     // =========================
     const cleanupSocketFromRoom = async () => {
-        const sessionId = socket.data?.sessionId;
-        if (!sessionId) return;
-        const state = roomState.get(sessionId);
+      try {
+        const sid = socket.data?.sessionId;
+        if (!sid) return;
+        const state = roomState.get(sid);
         if (!state) return;
 
         const meta = state.sockets.get(socket.id);
         if (!meta) return;
 
-        // Whiteboard cleanup (soft leave)
+        // Whiteboard soft leave
         if (state.whiteboardId) {
-            const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
-            if (wb) {
-                const participant = wb.participants.find(p => p.user.toString() === meta.userId);
-                if (participant) {
-                    participant.status = "LEFT";
-                    participant.leftAt = new Date();
-                }
-                await wb.save();
+          const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
+          if (wb) {
+            const participant = wb.participants.find(p => p.user.toString() === meta.userId);
+            if (participant) {
+              participant.status = "LEFT";
+              participant.leftAt = new Date();
             }
+            await wb.save();
+          }
         }
 
-        // Live session participant update (soft leave)
+        // Update liveSessionParticipant record by userId and sessionId
         if (meta.role !== ROLE_MAP.STREAMER) {
-            try {
-                const participant = await liveSessionParticipant.findOne({ socketId: socket.id });
-                if (participant) {
-                    participant.status = "LEFT";
-                    participant.leftAt = new Date();
-                    participant.isActiveDevice = false;
-                    await participant.save();
-                }
-            } catch (e) { console.error("cleanup update error:", e.message); }
-            state.viewers.delete(socket.id);
-            io.to(sessionId).emit("user_left", { userId: meta.userId, socketId: socket.id });
-        } else {
-            state.streamerSocketId = null;
-            const session = await liveSession.findById(sessionId);
-            if (session) {
-                session.status = "PAUSED";
-                await session.save();
+          try {
+            const participant = await liveSessionParticipant.findOne({ sessionId: mongoose.Types.ObjectId.createFromHexString(sid), userId: meta.userId });
+            // fallback: if above fails (string IDs), try matching socketId
+            const p = participant || await liveSessionParticipant.findOne({ socketId: socket.id });
+            if (p) {
+              p.status = "LEFT";
+              p.leftAt = new Date();
+              p.isActiveDevice = false;
+              await p.save();
             }
-            io.to(sessionId).emit("session_paused_or_ended_by_streamer");
+          } catch (e) { console.error("cleanup update error:", e.message); }
+
+          state.viewers.delete(socket.id);
+          io.to(sid).emit("user_left", { userId: meta.userId, socketId: socket.id });
+        } else {
+          // streamer left — pause session (or END depending on your business rules)
+          state.streamerSocketId = null;
+          const session = await liveSession.findById(sid);
+          if (session) {
+            session.status = "PAUSED"; // or "ENDED"
+            await session.save();
+          }
+          io.to(sid).emit("session_paused_or_ended_by_streamer");
         }
 
         state.sockets.delete(socket.id);
-        socket.leave(sessionId);
+        socket.leave(sid);
+      } catch (e) {
+        console.error("cleanupSocketFromRoom error:", e.message);
+      }
     };
-
 
     socket.on("leave_room", cleanupSocketFromRoom);
     socket.on("disconnect", cleanupSocketFromRoom);

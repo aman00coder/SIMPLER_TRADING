@@ -13,13 +13,13 @@ const ADMINSTREAMERVIEWERAuth = [verifyToken, checkRole([1, 2, 3])];
 // Participant Join/Leave
 // ===========================
 router.post(
-  "/joinParticipant/:sessionId",
+  "/joinParticipant",
   ADMINSTREAMERVIEWERAuth,
   liveSessionParticipantController.joinParticipant
 );
 
 router.post(
-  "/leaveParticipant/:sessionId",
+  "/leaveParticipant",
   ADMINSTREAMERVIEWERAuth,
   liveSessionParticipantController.leaveParticipant
 );
