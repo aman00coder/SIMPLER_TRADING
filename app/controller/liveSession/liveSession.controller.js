@@ -361,24 +361,24 @@ export const getSingleLiveSession = async (req, res) => {
         }
 
         const liveSession = await liveSessionModel
-            .findOne({ _id: sessionId })
-            .populate("streamerId", "name email role profilePic") // ✅ updated
-            .populate("participants", "name email role profilePic") 
+            .findOne({ sessionId }) // ✅ fixed here
+            .populate("streamerId", "name email role profilePic")
+            .populate("participants", "name email role profilePic")
             .populate("allowedUsers", "name email role profilePic")
             .populate({
-                path: "whiteboardId", // ✅ Whiteboard ka data
+                path: "whiteboardId",
                 populate: {
                     path: "participants",
                     select: "name email role profilePic"
                 }
+            })
+            .populate({
+                path: "chatMessages",
+                populate: {
+                    path: "senderId",
+                    select: "name email role profilePic"
+                }
             });
-            // .populate({
-            //     path: "chatMessages",
-            //     populate: {
-            //         path: "senderId",
-            //         select: "name email role profilePic"
-            //     }
-            // });
 
         if (!liveSession) {
             return sendErrorResponse(res, "Live session not found", 404);
@@ -391,6 +391,7 @@ export const getSingleLiveSession = async (req, res) => {
         return sendErrorResponse(res, "Internal server error", 500);
     }
 };
+
 
 
 export const updateLiveSession = async (req, res) => {
