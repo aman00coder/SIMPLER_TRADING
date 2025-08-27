@@ -99,7 +99,7 @@ export default function setupIntegratedSocket(server) {
         // verify JWT
         let decoded;
         try {
-          decoded = jwt.verify(token, process.env.JWT_SECRET);
+          decoded = jwt.verify(token, process.env.SECRET_KEY);
         } catch (err) {
           return socket.emit("error_message", "Invalid token");
         }
