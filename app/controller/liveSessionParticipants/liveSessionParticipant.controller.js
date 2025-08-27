@@ -191,8 +191,8 @@ export const leaveParticipant = async (req, res) => {
 
 export const kickParticipant = async (req, res) => {
   try {
-    const { sessionId, roomCode, participantId } = req.body;
-    const { reason } = req.body;
+    const { sessionId, participantId } = req.params;
+    const { roomCode, reason } = req.body; 
     const moderatorId = req.tokenData?.userId;
 
     if (!participantId || !moderatorId || (!sessionId && !roomCode)) {
@@ -200,14 +200,25 @@ export const kickParticipant = async (req, res) => {
     }
 
     let sessionExists;
-    if (sessionId) sessionExists = await liveSessionModel.findOne({ sessionId });
-    else if (roomCode) sessionExists = await liveSessionModel.findOne({ roomCode, status: "ACTIVE" });
+    if (sessionId) {
+      sessionExists = await liveSessionModel.findOne({ sessionId });
+    } else if (roomCode) {
+      sessionExists = await liveSessionModel.findOne({ roomCode, status: "ACTIVE" });
+    }
 
-    if (!sessionExists) return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
+    if (!sessionExists) {
+      return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
+    }
+
     const actualSessionId = sessionExists.sessionId;
 
-    const participant = await liveSessionParticipantModel.findOne({ _id: participantId, sessionId: actualSessionId });
-    if (!participant) return sendErrorResponse(res, "Participant not found in this session", HttpStatus.NOT_FOUND);
+    const participant = await liveSessionParticipantModel.findOne({
+      _id: participantId,
+      sessionId: actualSessionId
+    });
+    if (!participant) {
+      return sendErrorResponse(res, "Participant not found in this session", HttpStatus.NOT_FOUND);
+    }
 
     participant.status = "KICKED";
     participant.actionBy = moderatorId;
@@ -220,13 +231,27 @@ export const kickParticipant = async (req, res) => {
       participant.durationConnected += Math.floor(durationMs / 60000);
     }
 
-    participant.activityLog.push({ type: "kick", timestamp: new Date(), value: reason || "Removed by moderator", actionBy: moderatorId });
+    participant.activityLog.push({
+      type: "kick",
+      timestamp: new Date(),
+      value: reason || "Removed by moderator",
+      actionBy: moderatorId
+    });
     await participant.save();
 
     const io = req.app.get("io");
     if (io) {
-      io.to(actualSessionId).emit("participant:kicked", { sessionId: actualSessionId, participantId, userId: participant.userId, actionBy: moderatorId, reason: participant.reason });
-      io.to(participant.socketId).emit("session:kicked", { sessionId: actualSessionId, reason: participant.reason });
+      io.to(actualSessionId).emit("participant:kicked", {
+        sessionId: actualSessionId,
+        participantId,
+        userId: participant.userId,
+        actionBy: moderatorId,
+        reason: participant.reason
+      });
+      io.to(participant.socketId).emit("session:kicked", {
+        sessionId: actualSessionId,
+        reason: participant.reason
+      });
     }
 
     return sendSuccessResponse(res, participant, "Participant kicked successfully", HttpStatus.OK);
@@ -239,10 +264,11 @@ export const kickParticipant = async (req, res) => {
 
 
 
+
 export const toggleBanParticipant = async (req, res) => {
   try {
-    const { sessionId, roomCode, participantId } = req.body;
-    const { reason } = req.body;
+    const { sessionId, participantId } = req.params;  // ✅ params se lo
+    const { roomCode, reason } = req.body;
     const moderatorId = req.tokenData?.userId;
 
     if (!participantId || !moderatorId || (!sessionId && !roomCode)) {
@@ -250,32 +276,58 @@ export const toggleBanParticipant = async (req, res) => {
     }
 
     let sessionExists;
-    if (sessionId) sessionExists = await liveSessionModel.findOne({ sessionId });
-    else if (roomCode) sessionExists = await liveSessionModel.findOne({ roomCode, status: "ACTIVE" });
+    if (sessionId) {
+      sessionExists = await liveSessionModel.findOne({ sessionId });
+    } else if (roomCode) {
+      sessionExists = await liveSessionModel.findOne({ roomCode, status: "ACTIVE" });
+    }
 
-    if (!sessionExists) return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
+    if (!sessionExists) {
+      return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
+    }
     const actualSessionId = sessionExists.sessionId;
 
-    const participant = await liveSessionParticipantModel.findOne({ _id: participantId, sessionId: actualSessionId });
-    if (!participant) return sendErrorResponse(res, "Participant not found in this session", HttpStatus.NOT_FOUND);
+    const participant = await liveSessionParticipantModel.findOne({
+      _id: participantId,
+      sessionId: actualSessionId
+    });
+
+    if (!participant) {
+      return sendErrorResponse(res, "Participant not found in this session", HttpStatus.NOT_FOUND);
+    }
 
     const io = req.app.get("io");
 
+    // 🔄 If already banned → unban
     if (participant.status === "BANNED") {
-      participant.status = "ACTIVE";
+      participant.status = "JOINED"; // ✅ better than ACTIVE
       participant.actionBy = moderatorId;
       participant.reason = null;
       participant.leftAt = null;
       participant.isActiveDevice = true;
 
-      participant.activityLog.push({ type: "unban", timestamp: new Date(), value: "Unbanned by moderator", actionBy: moderatorId });
+      participant.activityLog.push({
+        type: "unban",
+        timestamp: new Date(),
+        value: "Unbanned by moderator",
+        actionBy: moderatorId
+      });
+
       await participant.save();
 
-      if (io) io.to(actualSessionId).emit("participant:unbanned", { sessionId: actualSessionId, participantId, userId: participant.userId, actionBy: moderatorId });
+      if (io) {
+        io.to(actualSessionId).emit("participant:unbanned", {
+          sessionId: actualSessionId,
+          participantId,
+          userId: participant.userId,
+          actionBy: moderatorId
+        });
+      }
 
       return sendSuccessResponse(res, participant, "Participant unbanned successfully", HttpStatus.OK);
     }
 
+    // 🚫 Ban flow
     participant.status = "BANNED";
     participant.actionBy = moderatorId;
     participant.reason = reason || "Banned by moderator";
@@ -287,12 +339,28 @@ export const toggleBanParticipant = async (req, res) => {
       participant.durationConnected += Math.floor(durationMs / 60000);
     }
 
-    participant.activityLog.push({ type: "ban", timestamp: new Date(), value: reason || "Banned by moderator", actionBy: moderatorId });
+    participant.activityLog.push({
+      type: "ban",
+      timestamp: new Date(),
+      value: reason || "Banned by moderator",
+      actionBy: moderatorId
+    });
+
     await participant.save();
 
     if (io) {
-      io.to(actualSessionId).emit("participant:banned", { sessionId: actualSessionId, participantId, userId: participant.userId, actionBy: moderatorId, reason: participant.reason });
-      io.to(participant.socketId).emit("session:banned", { sessionId: actualSessionId, reason: participant.reason });
+      io.to(actualSessionId).emit("participant:banned", {
+        sessionId: actualSessionId,
+        participantId,
+        userId: participant.userId,
+        actionBy: moderatorId,
+        reason: participant.reason
+      });
+
+      io.to(participant.socketId).emit("session:banned", {
+        sessionId: actualSessionId,
+        reason: participant.reason
+      });
     }
 
     return sendSuccessResponse(res, participant, "Participant banned successfully", HttpStatus.OK);
@@ -302,6 +370,7 @@ export const toggleBanParticipant = async (req, res) => {
     return sendErrorResponse(res, error.message, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
+
 
 
 
