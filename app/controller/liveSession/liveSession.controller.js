@@ -269,18 +269,13 @@ export const endLiveSession = async (req, res) => {
       return sendErrorResponse(res, "All fields required", 400);
     }
 
-    const liveSession = await liveSessionModel.findOne({
-      $or: [
-        { sessionId: sessionId },
-        { _id: mongoose.Types.ObjectId.isValid(sessionId) ? sessionId : null }
-      ]
-    });
-
+    // ✅ Only sessionId is used
+    const liveSession = await liveSessionModel.findOne({ sessionId });
     if (!liveSession) {
       return sendErrorResponse(res, "Live session not found", 404);
     }
 
-    // ✅ Updated: streamerId used instead of mentorId
+    // ✅ Check if user is the streamer
     if (liveSession.streamerId.toString() !== userId) {
       return sendErrorResponse(res, "Unauthorized to end this session", 401);
     }
@@ -395,174 +390,129 @@ export const getSingleLiveSession = async (req, res) => {
 
 
 export const updateLiveSession = async (req, res) => {
-    try {
-        const { sessionId } = req.params;
-        const updateData = req.body;
+  try {
+    const { sessionId } = req.params;
+    const updateData = req.body;
 
-        if (!sessionId || Object.keys(updateData).length === 0) {
-            return sendErrorResponse(res, "All fields required", 400);
-        }
-
-        // 🔹 Convert participants & allowedUsers to ObjectId properly
-        if (updateData.participants && Array.isArray(updateData.participants)) {
-            updateData.participants = updateData.participants.map(id => new mongoose.Types.ObjectId(id));
-        }
-
-        if (updateData.allowedUsers && Array.isArray(updateData.allowedUsers)) {
-            updateData.allowedUsers = updateData.allowedUsers.map(id => new mongoose.Types.ObjectId(id));
-        }
-
-        const updatedSession = await liveSessionModel
-            .findOneAndUpdate(
-                {
-                    $or: [
-                        { sessionId: sessionId },
-                        { _id: mongoose.Types.ObjectId.isValid(sessionId) ? sessionId : null }
-                    ]
-                },
-                { $set: updateData },
-                { new: true }
-            )
-            .populate("streamerId", "name email role profilePic")
-            .populate("participants", "name email role profilePic")
-            .populate("allowedUsers", "name email role profilePic")
-            .populate({
-                path: "whiteboardId",
-                populate: {
-                    path: "participants",
-                    select: "name email role profilePic"
-                }
-            });
-
-        if (!updatedSession) {
-            return sendErrorResponse(res, "Live session not found", 404);
-        }
-
-        // 🔹 Sync Whiteboard participants
-        if (updateData.participants && updatedSession.whiteboardId) {
-            await whiteBoardModel.findByIdAndUpdate(updatedSession.whiteboardId, {
-                $addToSet: { participants: { $each: updateData.participants } }
-            });
-        }
-
-        // 🔹 Emit Socket.io event
-        const io = req.app.get("io");
-        if (io) {
-            io.to(updatedSession.roomCode).emit("liveSessionUpdated", updatedSession);
-        }
-
-        return sendSuccessResponse(res, updatedSession, "Live session updated successfully", 200);
-
-    } catch (error) {
-        console.log("🔥 updateLiveSession error:", error.message);
-        return sendErrorResponse(res, "Internal server error", 500);
+    if (!sessionId || Object.keys(updateData).length === 0) {
+      return sendErrorResponse(res, "All fields required", 400);
     }
+
+    // Convert participants & allowedUsers to ObjectId
+    if (updateData.participants && Array.isArray(updateData.participants)) {
+      updateData.participants = updateData.participants.map(id => new mongoose.Types.ObjectId(id));
+    }
+
+    if (updateData.allowedUsers && Array.isArray(updateData.allowedUsers)) {
+      updateData.allowedUsers = updateData.allowedUsers.map(id => new mongoose.Types.ObjectId(id));
+    }
+
+    const updatedSession = await liveSessionModel
+      .findOneAndUpdate(
+        { sessionId },
+        { $set: updateData },
+        { new: true }
+      )
+      .populate("streamerId", "name email role profilePic")
+      .populate("participants", "name email role profilePic")
+      .populate("allowedUsers", "name email role profilePic")
+      .populate({
+        path: "whiteboardId",
+        populate: { path: "participants", select: "name email role profilePic" }
+      });
+
+    if (!updatedSession) return sendErrorResponse(res, "Live session not found", 404);
+
+    // Sync Whiteboard participants
+    if (updateData.participants && updatedSession.whiteboardId) {
+      await whiteBoardModel.findByIdAndUpdate(updatedSession.whiteboardId, {
+        $addToSet: { participants: { $each: updateData.participants } }
+      });
+    }
+
+    // Socket emit
+    const io = req.app.get("io");
+    if (io) io.to(updatedSession.roomCode).emit("liveSessionUpdated", updatedSession);
+
+    return sendSuccessResponse(res, updatedSession, "Live session updated successfully", 200);
+  } catch (error) {
+    console.log("🔥 updateLiveSession error:", error.message);
+    return sendErrorResponse(res, "Internal server error", 500);
+  }
 };
 
+// 🔹 Soft delete live session
 export const softDeleteLiveSession = async (req, res) => {
-    try {
-        const { sessionId } = req.params;
-        if (!sessionId) {
-            return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
-        }
+  try {
+    const { sessionId } = req.params;
+    if (!sessionId) return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
 
-        const deletedSession = await liveSessionModel
-            .findOneAndUpdate(
-                {
-                    $or: [
-                        { sessionId: sessionId },
-                        { _id: mongoose.Types.ObjectId.isValid(sessionId) ? sessionId : null }
-                    ]
-                },
-                { $set: { isDeleted: true, status: "ENDED" } },
-                { new: true }
-            )
-            .populate("mentorId", "name email role profilePic")
-            .populate("participants", "name email role profilePic")
-            .populate("allowedUsers", "name email role profilePic")
-            .populate({
-                path: "whiteboardId",
-                populate: {
-                    path: "participants",
-                    select: "name email role profilePic"
-                }
-            });
+    const deletedSession = await liveSessionModel
+      .findOneAndUpdate(
+        { sessionId },
+        { $set: { isDeleted: true, status: "ENDED" } },
+        { new: true }
+      )
+      .populate("streamerId", "name email role profilePic")
+      .populate("participants", "name email role profilePic")
+      .populate("allowedUsers", "name email role profilePic")
+      .populate({
+        path: "whiteboardId",
+        populate: { path: "participants", select: "name email role profilePic" }
+      });
 
-        if (!deletedSession) {
-            return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
-        }
+    if (!deletedSession) return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
 
-        // Whiteboard bhi soft delete
-        if (deletedSession.whiteboardId) {
-            await whiteBoardModel.findByIdAndUpdate(deletedSession.whiteboardId, {
-                $set: { isDeleted: true, status: "ENDED" }
-            });
-        }
-
-        // ✅ Socket emit
-        const io = req.app.get("io");
-        if (io) {
-            io.to(deletedSession.roomCode).emit("liveSessionDeleted", deletedSession);
-        }
-
-        return sendSuccessResponse(res, deletedSession, successEn.LIVE_SESSION_DELETED, HttpStatus.OK);
-
-    } catch (error) {
-        console.log(error.message);
-        return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+    if (deletedSession.whiteboardId) {
+      await whiteBoardModel.findByIdAndUpdate(deletedSession.whiteboardId, {
+        $set: { isDeleted: true, status: "ENDED" }
+      });
     }
+
+    const io = req.app.get("io");
+    if (io) io.to(deletedSession.roomCode).emit("liveSessionDeleted", deletedSession);
+
+    return sendSuccessResponse(res, deletedSession, successEn.LIVE_SESSION_DELETED, HttpStatus.OK);
+  } catch (error) {
+    console.log(error.message);
+    return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+  }
 };
 
+// 🔹 Restore live session
 export const restoreLiveSession = async (req, res) => {
-    try {
-        const { sessionId } = req.params;
-        if (!sessionId) {
-            return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
-        }
+  try {
+    const { sessionId } = req.params;
+    if (!sessionId) return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
 
-        const updatedSession = await liveSessionModel
-            .findOneAndUpdate(
-                {
-                    $or: [
-                        { sessionId: sessionId },
-                        { _id: mongoose.Types.ObjectId.isValid(sessionId) ? sessionId : null }
-                    ]
-                },
-                { $set: { isDeleted: false, status: "ACTIVE" } },
-                { new: true }
-            )
-            .populate("mentorId", "name email role profilePic")
-            .populate("participants", "name email role profilePic")
-            .populate("allowedUsers", "name email role profilePic")
-            .populate({
-                path: "whiteboardId",
-                populate: {
-                    path: "participants",
-                    select: "name email role profilePic"
-                }
-            });
+    const updatedSession = await liveSessionModel
+      .findOneAndUpdate(
+        { sessionId },
+        { $set: { isDeleted: false, status: "ACTIVE" } },
+        { new: true }
+      )
+      .populate("streamerId", "name email role profilePic")
+      .populate("participants", "name email role profilePic")
+      .populate("allowedUsers", "name email role profilePic")
+      .populate({
+        path: "whiteboardId",
+        populate: { path: "participants", select: "name email role profilePic" }
+      });
 
-        if (!updatedSession) {
-            return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
-        }
+    if (!updatedSession) return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
 
-        // Whiteboard bhi restore
-        if (updatedSession.whiteboardId) {
-            await whiteBoardModel.findByIdAndUpdate(updatedSession.whiteboardId, {
-                $set: { isDeleted: false, status: "ACTIVE" }
-            });
-        }
-
-        // ✅ Socket emit
-        const io = req.app.get("io");
-        if (io) {
-            io.to(updatedSession.roomCode).emit("liveSessionRestored", updatedSession);
-        }
-
-        return sendSuccessResponse(res, updatedSession, successEn.LIVE_SESSION_RESTORED, HttpStatus.OK);
-
-    } catch (error) {
-        console.log(error.message);
-        return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+    if (updatedSession.whiteboardId) {
+      await whiteBoardModel.findByIdAndUpdate(updatedSession.whiteboardId, {
+        $set: { isDeleted: false, status: "ACTIVE" }
+      });
     }
+
+    const io = req.app.get("io");
+    if (io) io.to(updatedSession.roomCode).emit("liveSessionRestored", updatedSession);
+
+    return sendSuccessResponse(res, updatedSession, successEn.LIVE_SESSION_RESTORED, HttpStatus.OK);
+  } catch (error) {
+    console.log(error.message);
+    return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+  }
 };

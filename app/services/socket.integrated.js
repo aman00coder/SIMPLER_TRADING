@@ -78,7 +78,6 @@ export const initWhiteboardRTC = (sessionId, whiteboardId, createdBy) => {
 export default function setupIntegratedSocket(server) {
   io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
 
-  // safeEmit helper
   const safeEmit = (toSocketId, event, payload) => {
     const s = io.sockets.sockets.get(toSocketId);
     if (s) s.emit(event, payload);
@@ -87,16 +86,10 @@ export default function setupIntegratedSocket(server) {
   io.on("connection", (socket) => {
     console.log("New client connected:", socket.id);
 
-    // =========================
-    // ===== JOIN ROOM ========
-    // =========================
-    // Client should call after obtaining sessionId from POST /join-session (or can pass roomCode)
-    // We'll accept either: { token, sessionId } OR { token, roomCode }
     socket.on("join_room", async ({ token, sessionId, roomCode }) => {
       try {
         if (!token || (!sessionId && !roomCode)) return socket.emit("error_message", "Missing token or sessionId/roomCode");
 
-        // verify JWT
         let decoded;
         try {
           decoded = jwt.verify(token, process.env.SECRET_KEY);
@@ -106,35 +99,25 @@ export default function setupIntegratedSocket(server) {
         const userId = decoded.userId;
         const userRole = decoded.role;
 
-        // Resolve session by sessionId or roomCode
         let session;
         if (sessionId) {
-          // sessionId may be Mongo _id or sessionId (uuid string)
-          if (mongoose.Types.ObjectId.isValid(sessionId)) {
-            session = await liveSession.findById(sessionId);
-          }
-          if (!session) session = await liveSession.findOne({ sessionId });
+          session = await liveSession.findOne({ sessionId });
         } else {
           session = await liveSession.findOne({ roomCode });
         }
 
         if (!session) return socket.emit("error_message", "Session not found");
-
-        // Check session status
         if (!["SCHEDULED", "ACTIVE", "PAUSED"].includes(session.status)) {
           return socket.emit("error_message", `Session is ${session.status}`);
         }
 
-        // Private session check
         if (session.isPrivate) {
-          const allowed = (Array.isArray(session.allowedUsers) && session.allowedUsers.some(u => u.toString() === userId));
-          if (!allowed) {
-            return socket.emit("error_message", "You are not allowed to join this private session");
-          }
+          const allowed = Array.isArray(session.allowedUsers) && session.allowedUsers.some(u => u.toString() === userId);
+          if (!allowed) return socket.emit("error_message", "You are not allowed to join this private session");
         }
 
-        // Init or ensure roomState exists (use Mongo _id string as room key)
-        const sid = session._id.toString();
+        // ✅ Use sessionId as key
+        const sid = session.sessionId;
         if (!roomState.has(sid)) {
           roomState.set(sid, {
             whiteboardId: session.whiteboardId || null,
@@ -148,20 +131,16 @@ export default function setupIntegratedSocket(server) {
         }
         const state = roomState.get(sid);
 
-        // Max participants check (count active participants in DB)
+        // Max participants
         const activeCount = await liveSessionParticipant.countDocuments({ sessionId: session._id, status: { $ne: "LEFT" } });
         if ((session.maxParticipants || 100) <= activeCount && userRole !== ROLE_MAP.STREAMER) {
           return socket.emit("error_message", "Max participants limit reached");
         }
 
-        // Check if user is banned (existing participant record with isBanned)
-        const existingParticipant = await liveSessionParticipant.findOne({ sessionId: session._id, userId });
-        if (existingParticipant && existingParticipant.isBanned) {
-          return socket.emit("error_message", "You are banned from this session");
-        }
+        // Check if banned
+        let participant = await liveSessionParticipant.findOne({ sessionId: session._id, userId });
+        if (participant && participant.isBanned) return socket.emit("error_message", "You are banned from this session");
 
-        // Save/update participant record (handle reconnects by userId)
-        let participant = existingParticipant;
         if (!participant) {
           participant = await liveSessionParticipant.create({
             sessionId: session._id,
@@ -171,11 +150,9 @@ export default function setupIntegratedSocket(server) {
             isActiveDevice: true,
             joinedAt: new Date()
           });
-          // increment totalJoins (analytics)
           session.totalJoins = (session.totalJoins || 0) + 1;
           await session.save();
         } else {
-          // update existing participant entry instead of creating duplicate
           participant.socketId = socket.id;
           participant.status = "JOINED";
           participant.isActiveDevice = true;
@@ -184,15 +161,13 @@ export default function setupIntegratedSocket(server) {
           await participant.save();
         }
 
-        // store socket metadata & join room
+        // Join room
         state.sockets.set(socket.id, { userId, role: userRole });
         socket.data = { sessionId: sid, userId, role: userRole };
         socket.join(sid);
 
-        // Streamer vs viewer handling
         if (userRole === ROLE_MAP.STREAMER) {
           if (state.streamerSocketId && state.streamerSocketId !== socket.id) {
-            // another streamer already connected
             return socket.emit("error_message", "Streamer already connected");
           }
           state.streamerSocketId = socket.id;
@@ -200,26 +175,19 @@ export default function setupIntegratedSocket(server) {
         } else {
           state.viewers.add(socket.id);
           socket.emit("joined_room", { as: "VIEWER", sessionId: sid, roomCode: session.roomCode, whiteboardId: state.whiteboardId });
-
-          // notify streamer that viewer is ready (if streamer connected)
           if (state.streamerSocketId) {
             safeEmit(state.streamerSocketId, "viewer_ready", { viewerSocketId: socket.id, viewerUserId: userId });
           }
         }
 
-        // Add to whiteboard participants if available (avoid duplicates)
         if (state.whiteboardId) {
           const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
-          if (wb) {
-            const alreadyJoined = wb.participants && wb.participants.find(p => p.user.toString() === userId);
-            if (!alreadyJoined) {
-              wb.participants.push({ user: userId, role: userRole === ROLE_MAP.STREAMER ? "editor" : "viewer", joinedAt: new Date() });
-              await wb.save();
-            }
+          if (wb && !wb.participants.find(p => p.user.toString() === userId)) {
+            wb.participants.push({ user: userId, role: userRole === ROLE_MAP.STREAMER ? "editor" : "viewer", joinedAt: new Date() });
+            await wb.save();
           }
         }
 
-        // update peak participants if needed
         const currentParticipants = state.viewers.size + (state.streamerSocketId ? 1 : 0);
         if ((session.peakParticipants || 0) < currentParticipants) {
           session.peakParticipants = currentParticipants;
@@ -231,7 +199,6 @@ export default function setupIntegratedSocket(server) {
         socket.emit("error_message", "Invalid token/session");
       }
     });
-
     // =========================
     // ===== CHAT MESSAGE =====
     // =========================
