@@ -20,6 +20,24 @@ router.route("/createCourse").post(
     ]),
     courseController.createCourse
 )
+router.route("/getAllCourses").get(
+    ADMINSTREAMERVIEWERAuth,
+    courseController.getAllCourse
+)
 
+router.route("/getSingleCourse/:id").get(
+    ADMINSTREAMERVIEWERAuth,
+    courseController.getSingleCourse
+)
+
+router.route("/updateCourse/:id").put(
+    ADMINSTREAMERAuth,
+    uploadFile([
+        { name: "lectures", maxCount: 10 },
+        { name: "thumbnail", maxCount: 1 },
+        { name: "assignments", maxCount: 25 }
+    ]),
+    courseController.updateCourse
+)   
 
 export default router;

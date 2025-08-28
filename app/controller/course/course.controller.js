@@ -118,8 +118,6 @@ export const createCourse = async (req, res) => {
 
 
 
-
-
 export const getAllCourse = async (req, res) => {
   try {
     const courses = await courseModel
