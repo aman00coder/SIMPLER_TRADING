@@ -287,6 +287,19 @@ export default function setupIntegratedSocket(server) {
       safeEmit(state.streamerSocketId, "answer", { from: socket.id, sdp });
     });
 
+    // Viewer sends audio offer to streamer
+    socket.on("viewer_offer", ({ sessionId, sdp }) => {
+      const state = roomState.get(sessionId);
+      if (!state || !state.streamerSocketId) return;
+      safeEmit(state.streamerSocketId, "viewer_offer", { from: socket.id, sdp });
+    });
+
+    // Streamer sends answer back to viewer
+    socket.on("viewer_answer", ({ sessionId, targetSocketId, sdp }) => {
+      safeEmit(targetSocketId, "viewer_answer", { from: socket.id, sdp });
+    });
+
+
     // ICE candidate exchange (both directions)
     socket.on("ice-candidate", ({ sessionId, targetSocketId, candidate }) => {
       const state = roomState.get(sessionId);
