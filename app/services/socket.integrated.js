@@ -5,6 +5,7 @@ import liveSession from "../model/liveSessions/liveeSession.model.js";
 import liveSessionParticipant from "../model/liveSessionParticipant/liveSessionParticipant.model.js";
 import whiteboardModel from "../model/whiteBoards/whiteBoard.model.js";
 import { ROLE_MAP } from "../constant/role.js";
+import authenticationModel from "../../app/model/Authentication/authentication.model.js"
 import crypto from "crypto";
 // ======= Global Variables =======
 let io;
