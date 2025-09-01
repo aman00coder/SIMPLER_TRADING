@@ -209,31 +209,44 @@ export default function setupIntegratedSocket(server) {
         if (!state) return;
         const meta = state.sockets.get(socket.id);
         if (!meta) return;
+
+        // ✅ Fetch sender name from User model
+        const sender = await authenticationModel.findById(meta.userId).select("name");
+
         // broadcast
-        io.to(sessionId).emit("chat_message", { userId: meta.userId, message, socketId: socket.id, at: new Date() });
-        // (optional) persist: your existing ChatMessage model/controller can handle saving
+        io.to(sessionId).emit("chat_message", { 
+          userId: meta.userId, 
+          name: sender?.name || "Unknown",   // 👈 name include kiya
+          message, 
+          socketId: socket.id, 
+          at: new Date() 
+        });
+
       } catch (e) {
         console.error("chat_message error:", e.message);
       }
     });
 
+
+
     // =========================
     // ===== STREAMER CONTROLS =====
     // =========================
-    socket.on("streamer_start", async ({ sessionId }) => {
-      try {
-        const session = await liveSession.findById(sessionId);
-        if (!session) return;
-        session.status = "ACTIVE";
-        session.actualStartTime = new Date();
-        await session.save();
-        io.to(sessionId).emit("streamer_started", { sessionId });
-      } catch (e) { console.error(e.message); }
-    });
+  socket.on("streamer_start", async ({ sessionId }) => {
+    try {
+      const session = await liveSession.findOne({ sessionId }); // <- fixed
+      if (!session) return;
+      session.status = "ACTIVE";
+      session.actualStartTime = new Date();
+      await session.save();
+      io.to(sessionId).emit("streamer_started", { sessionId });
+    } catch (e) { console.error(e.message); }
+  });
+
 
     socket.on("streamer_pause", async ({ sessionId }) => {
       try {
-        const session = await liveSession.findById(sessionId);
+        const session = await liveSession.findOne({ sessionId }); // <- fixed
         if (!session) return;
         session.status = "PAUSED";
         await session.save();
@@ -241,15 +254,17 @@ export default function setupIntegratedSocket(server) {
       } catch (e) { console.error(e.message); }
     });
 
+
     socket.on("streamer_resume", async ({ sessionId }) => {
       try {
-        const session = await liveSession.findById(sessionId);
+        const session = await liveSession.findOne({ sessionId }); // <- fixed
         if (!session) return;
         session.status = "ACTIVE";
         await session.save();
         io.to(sessionId).emit("streamer_resumed", { sessionId });
       } catch (e) { console.error(e.message); }
     });
+
 
     // =========================
     // ===== WEBRTC SIGNALING =====
@@ -382,8 +397,9 @@ export default function setupIntegratedSocket(server) {
         // Update liveSessionParticipant record by userId and sessionId
         if (meta.role !== ROLE_MAP.STREAMER) {
           try {
-            const participant = await liveSessionParticipant.findOne({ sessionId: mongoose.Types.ObjectId.createFromHexString(sid), userId: meta.userId });
-            // fallback: if above fails (string IDs), try matching socketId
+            // 🔹 Replace ObjectId casting with string sessionId
+            const participant = await liveSessionParticipant.findOne({ sessionId: sid, userId: meta.userId });
+            // fallback: if above fails, try matching socketId
             const p = participant || await liveSessionParticipant.findOne({ socketId: socket.id });
             if (p) {
               p.status = "LEFT";
@@ -398,11 +414,14 @@ export default function setupIntegratedSocket(server) {
         } else {
           // streamer left — pause session (or END depending on your business rules)
           state.streamerSocketId = null;
-          const session = await liveSession.findById(sid);
+
+          // 🔹 Fixed: use sessionId field instead of _id
+          const session = await liveSession.findOne({ sessionId: sid });
           if (session) {
             session.status = "PAUSED"; // or "ENDED"
             await session.save();
           }
+
           io.to(sid).emit("session_paused_or_ended_by_streamer");
         }
 
@@ -421,7 +440,7 @@ export default function setupIntegratedSocket(server) {
     // =========================
     socket.on("save_recording", async ({ sessionId, recordingFiles }) => {
       try {
-        const session = await liveSession.findById(sessionId);
+        const session = await liveSession.findOne({ sessionId }); // <- fixed
         if (!session) return;
         session.recordingUrl = [...(session.recordingUrl || []), ...recordingFiles];
         await session.save();
@@ -431,7 +450,6 @@ export default function setupIntegratedSocket(server) {
         socket.emit("error_message", "Recording save failed");
       }
     });
-
   }); // connection
 
   return io;
