@@ -59,6 +59,6 @@ const io = setupIntegratedSocket(httpServer);
 app.set("io", io); 
 
 const PORT = process.env.PORT || 9090;
-httpServer.listen(PORT, () => {
+httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀✨ Server is running on port ${PORT} 🌟`);
 });
