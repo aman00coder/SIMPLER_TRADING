@@ -290,11 +290,6 @@ export default function setupIntegratedSocket(server) {
       safeEmit(targetSocketId, "viewer_answer", { from: socket.id, sdp });
     });
 
-    // ICE candidates exchange
-    socket.on("ice-candidate", ({ sessionId, targetSocketId, candidate }) => {
-      safeEmit(targetSocketId, "ice-candidate", { from: socket.id, candidate });
-    });
-
     // Streamer sends answer back to viewer
     socket.on("viewer_answer", ({ sessionId, targetSocketId, sdp }) => {
       safeEmit(targetSocketId, "viewer_answer", { from: socket.id, sdp });
