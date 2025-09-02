@@ -278,16 +278,20 @@ export default function setupIntegratedSocket(server) {
       safeEmit(targetSocketId, "offer", { from: socket.id, sdp });
     });
 
+    // Viewer sends answer back to streamer
+    socket.on("answer", ({ sessionId, sdp }) => {
+      const state = roomState.get(sessionId);
+      if (!state) return;
+      const meta = state.sockets.get(socket.id);
+      if (!meta || meta.role === ROLE_MAP.STREAMER) return;
+      safeEmit(state.streamerSocketId, "answer", { from: socket.id, sdp });
+    });
+
     // Viewer sends audio offer to streamer
     socket.on("viewer_offer", ({ sessionId, sdp }) => {
       const state = roomState.get(sessionId);
       if (!state || !state.streamerSocketId) return;
       safeEmit(state.streamerSocketId, "viewer_offer", { from: socket.id, sdp });
-    });
-
-    // Streamer sends answer back to viewer
-    socket.on("viewer_answer", ({ sessionId, targetSocketId, sdp }) => {
-      safeEmit(targetSocketId, "viewer_answer", { from: socket.id, sdp });
     });
 
     // Streamer sends answer back to viewer
