@@ -1,3 +1,4 @@
+// socket.integrated.js
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
@@ -5,13 +6,14 @@ import liveSession from "../model/liveSessions/liveeSession.model.js";
 import liveSessionParticipant from "../model/liveSessionParticipant/liveSessionParticipant.model.js";
 import whiteboardModel from "../model/whiteBoards/whiteBoard.model.js";
 import { ROLE_MAP } from "../constant/role.js";
-import authenticationModel from "../../app/model/Authentication/authentication.model.js"
-import crypto from "crypto";
-// ======= Global Variables =======
-let io;
-const roomState = new Map(); // key: sessionId (string) -> { whiteboardId, createdBy, streamerSocketId, viewers: Set, sockets: Map, pendingOps, flushTimer }
+import authenticationModel from "../../app/model/Authentication/authentication.model.js";
 
-// ======= ICE Servers Helper =======
+// ===== Global Variables =====
+let io;
+const roomState = new Map(); 
+// key: sessionId -> { whiteboardId, createdBy, streamerSocketId, viewers: Set, sockets: Map, pendingOps, flushTimer }
+
+// ===== ICE Servers Helper =====
 function getIceServersFromEnv() {
   const stun = (process.env.STUN_URLS || "").split(",").map(s => s.trim()).filter(Boolean);
   const turn = (process.env.TURN_URLS || "").split(",").map(s => s.trim()).filter(Boolean);
@@ -23,7 +25,7 @@ function getIceServersFromEnv() {
   return servers;
 }
 
-// ======= Throttled Whiteboard DB flush =======
+// ===== Throttled Whiteboard DB flush =====
 async function flushCanvasOps(sessionId) {
   const state = roomState.get(sessionId);
   if (!state || !state.whiteboardId) return;
@@ -55,7 +57,7 @@ function scheduleFlush(sessionId, op) {
   state.flushTimer = setTimeout(() => flushCanvasOps(sessionId).catch(() => {}), 2000);
 }
 
-// ======= Initialize Whiteboard Room (used by controller when creating session) =======
+// ===== Initialize Whiteboard Room =====
 export const initWhiteboardRTC = (sessionId, whiteboardId, createdBy) => {
   if (!roomState.has(sessionId)) {
     roomState.set(sessionId, {
@@ -75,7 +77,7 @@ export const initWhiteboardRTC = (sessionId, whiteboardId, createdBy) => {
   return roomState.get(sessionId);
 };
 
-// ======= Setup Socket.io =======
+// ===== Setup Socket.io =====
 export default function setupIntegratedSocket(server) {
   io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
 
@@ -87,6 +89,7 @@ export default function setupIntegratedSocket(server) {
   io.on("connection", (socket) => {
     console.log("New client connected:", socket.id);
 
+    // ========= JOIN ROOM =========
     socket.on("join_room", async ({ token, sessionId, roomCode }) => {
       try {
         if (!token || (!sessionId && !roomCode)) return socket.emit("error_message", "Missing token or sessionId/roomCode");
@@ -94,18 +97,15 @@ export default function setupIntegratedSocket(server) {
         let decoded;
         try {
           decoded = jwt.verify(token, process.env.SECRET_KEY);
-        } catch (err) {
+        } catch {
           return socket.emit("error_message", "Invalid token");
         }
         const userId = decoded.userId;
         const userRole = decoded.role;
 
-        let session;
-        if (sessionId) {
-          session = await liveSession.findOne({ sessionId });
-        } else {
-          session = await liveSession.findOne({ roomCode });
-        }
+        let session = sessionId
+          ? await liveSession.findOne({ sessionId })
+          : await liveSession.findOne({ roomCode });
 
         if (!session) return socket.emit("error_message", "Session not found");
         if (!["SCHEDULED", "ACTIVE", "PAUSED"].includes(session.status)) {
@@ -117,7 +117,6 @@ export default function setupIntegratedSocket(server) {
           if (!allowed) return socket.emit("error_message", "You are not allowed to join this private session");
         }
 
-        // ✅ Use sessionId as key
         const sid = session.sessionId;
         if (!roomState.has(sid)) {
           roomState.set(sid, {
@@ -140,7 +139,7 @@ export default function setupIntegratedSocket(server) {
 
         // Check if banned
         let participant = await liveSessionParticipant.findOne({ sessionId: session._id, userId });
-        if (participant && participant.isBanned) return socket.emit("error_message", "You are banned from this session");
+        if (participant?.isBanned) return socket.emit("error_message", "You are banned from this session");
 
         if (!participant) {
           participant = await liveSessionParticipant.create({
@@ -162,7 +161,6 @@ export default function setupIntegratedSocket(server) {
           await participant.save();
         }
 
-        // Join room
         state.sockets.set(socket.id, { userId, role: userRole });
         socket.data = { sessionId: sid, userId, role: userRole };
         socket.join(sid);
@@ -200,11 +198,8 @@ export default function setupIntegratedSocket(server) {
         socket.emit("error_message", "Invalid token/session");
       }
     });
-    // =========================
-    
-    // ===== CHAT MESSAGE =====
-    // =========================
-    // Emits to room and (optionally) persist via ChatMessage controller if you have one
+
+    // ========= CHAT =========
     socket.on("chat_message", async ({ sessionId, message }) => {
       try {
         const state = roomState.get(sessionId);
@@ -212,99 +207,63 @@ export default function setupIntegratedSocket(server) {
         const meta = state.sockets.get(socket.id);
         if (!meta) return;
 
-        // ✅ Fetch sender name from User model
         const sender = await authenticationModel.findById(meta.userId).select("name");
-
-        // broadcast
-        io.to(sessionId).emit("chat_message", { 
-          userId: meta.userId, 
-          name: sender?.name || "Unknown",   // 👈 name include kiya
-          message, 
-          socketId: socket.id, 
-          at: new Date() 
+        io.to(sessionId).emit("chat_message", {
+          userId: meta.userId,
+          name: sender?.name || "Unknown",
+          message,
+          socketId: socket.id,
+          at: new Date()
         });
-
       } catch (e) {
         console.error("chat_message error:", e.message);
       }
     });
 
-
-
-    // =========================
-    // ===== STREAMER CONTROLS =====
-    // =========================
-  socket.on("streamer_start", async ({ sessionId }) => {
-    try {
-      const session = await liveSession.findOne({ sessionId }); // <- fixed
+    // ========= STREAMER CONTROLS =========
+    socket.on("streamer_start", async ({ sessionId }) => {
+      const session = await liveSession.findOne({ sessionId });
       if (!session) return;
       session.status = "ACTIVE";
       session.actualStartTime = new Date();
       await session.save();
       io.to(sessionId).emit("streamer_started", { sessionId });
-    } catch (e) { console.error(e.message); }
-  });
-
+    });
 
     socket.on("streamer_pause", async ({ sessionId }) => {
-      try {
-        const session = await liveSession.findOne({ sessionId }); // <- fixed
-        if (!session) return;
-        session.status = "PAUSED";
-        await session.save();
-        io.to(sessionId).emit("streamer_paused", { sessionId });
-      } catch (e) { console.error(e.message); }
+      const session = await liveSession.findOne({ sessionId });
+      if (!session) return;
+      session.status = "PAUSED";
+      await session.save();
+      io.to(sessionId).emit("streamer_paused", { sessionId });
     });
-
 
     socket.on("streamer_resume", async ({ sessionId }) => {
-      try {
-        const session = await liveSession.findOne({ sessionId }); // <- fixed
-        if (!session) return;
-        session.status = "ACTIVE";
-        await session.save();
-        io.to(sessionId).emit("streamer_resumed", { sessionId });
-      } catch (e) { console.error(e.message); }
+      const session = await liveSession.findOne({ sessionId });
+      if (!session) return;
+      session.status = "ACTIVE";
+      await session.save();
+      io.to(sessionId).emit("streamer_resumed", { sessionId });
     });
 
-
-    // =========================
-    // ===== WEBRTC SIGNALING =====
-    // =========================
-    // Streamer sends offer to a target viewer socket id
+    // ========= WEBRTC SIGNALING =========
     socket.on("offer", ({ sessionId, targetSocketId, sdp }) => {
       const state = roomState.get(sessionId);
       if (!state || state.streamerSocketId !== socket.id) return;
       safeEmit(targetSocketId, "offer", { from: socket.id, sdp });
     });
 
-    // Viewer sends audio offer to streamer
     socket.on("viewer_offer", ({ sessionId, sdp }) => {
       const state = roomState.get(sessionId);
       if (!state || !state.streamerSocketId) return;
       safeEmit(state.streamerSocketId, "viewer_offer", { from: socket.id, sdp });
     });
 
-    // Streamer sends answer back to viewer
     socket.on("viewer_answer", ({ sessionId, targetSocketId, sdp }) => {
       safeEmit(targetSocketId, "viewer_answer", { from: socket.id, sdp });
     });
 
-    // ICE candidates exchange
     socket.on("ice-candidate", ({ sessionId, targetSocketId, candidate }) => {
-      safeEmit(targetSocketId, "ice-candidate", { from: socket.id, candidate });
-    });
-
-    // Streamer sends answer back to viewer
-    socket.on("viewer_answer", ({ sessionId, targetSocketId, sdp }) => {
-      safeEmit(targetSocketId, "viewer_answer", { from: socket.id, sdp });
-    });
-
-
-    // ICE candidate exchange (both directions)
-    socket.on("ice-candidate", ({ sessionId, targetSocketId, candidate }) => {
-      const state = roomState.get(sessionId);
-      if (!state) return;
       safeEmit(targetSocketId, "ice-candidate", { from: socket.id, candidate });
     });
 
@@ -312,12 +271,10 @@ export default function setupIntegratedSocket(server) {
       socket.emit("ice_servers", getIceServersFromEnv());
     });
 
-    // =========================
-    // ===== WHITEBOARD EVENTS =====
-    // =========================
+    // ========= WHITEBOARD EVENTS =========
     socket.on("whiteboard_draw", ({ sessionId, drawData, patch }) => {
       const state = roomState.get(sessionId);
-      if (!state || !state.whiteboardId) return;
+      if (!state?.whiteboardId) return;
       const meta = state.sockets.get(socket.id);
       if (!meta) return;
       socket.to(sessionId).emit("whiteboard_draw", { userId: meta.userId, drawData });
@@ -326,7 +283,7 @@ export default function setupIntegratedSocket(server) {
 
     socket.on("whiteboard_erase", ({ sessionId, eraseData, patch }) => {
       const state = roomState.get(sessionId);
-      if (!state || !state.whiteboardId) return;
+      if (!state?.whiteboardId) return;
       const meta = state.sockets.get(socket.id);
       if (!meta) return;
       socket.to(sessionId).emit("whiteboard_erase", { userId: meta.userId, eraseData });
@@ -335,7 +292,7 @@ export default function setupIntegratedSocket(server) {
 
     socket.on("whiteboard_undo", async ({ sessionId }) => {
       const state = roomState.get(sessionId);
-      if (!state || !state.whiteboardId) return;
+      if (!state?.whiteboardId) return;
       const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
       if (!wb) return;
       const last = (wb.undoStack || []).pop();
@@ -348,7 +305,7 @@ export default function setupIntegratedSocket(server) {
 
     socket.on("whiteboard_redo", async ({ sessionId }) => {
       const state = roomState.get(sessionId);
-      if (!state || !state.whiteboardId) return;
+      if (!state?.whiteboardId) return;
       const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
       if (!wb) return;
       const last = (wb.redoStack || []).pop();
@@ -374,7 +331,7 @@ export default function setupIntegratedSocket(server) {
 
     socket.on("whiteboard_state_request", async ({ sessionId }) => {
       const state = roomState.get(sessionId);
-      if (!state || !state.whiteboardId) return;
+      if (!state?.whiteboardId) return;
       const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
       if (!wb) return;
       socket.emit("whiteboard_state_sync", {
@@ -384,9 +341,7 @@ export default function setupIntegratedSocket(server) {
       });
     });
 
-    // =========================
-    // ===== LEAVE / DISCONNECT =====
-    // =========================
+    // ========= LEAVE / DISCONNECT =========
     const cleanupSocketFromRoom = async () => {
       try {
         const sid = socket.data?.sessionId;
@@ -397,7 +352,6 @@ export default function setupIntegratedSocket(server) {
         const meta = state.sockets.get(socket.id);
         if (!meta) return;
 
-        // Whiteboard soft leave
         if (state.whiteboardId) {
           const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
           if (wb) {
@@ -410,34 +364,24 @@ export default function setupIntegratedSocket(server) {
           }
         }
 
-        // Update liveSessionParticipant record by userId and sessionId
         if (meta.role !== ROLE_MAP.STREAMER) {
-          try {
-            // 🔹 Replace ObjectId casting with string sessionId
-            const participant = await liveSessionParticipant.findOne({ sessionId: sid, userId: meta.userId });
-            // fallback: if above fails, try matching socketId
-            const p = participant || await liveSessionParticipant.findOne({ socketId: socket.id });
-            if (p) {
-              p.status = "LEFT";
-              p.leftAt = new Date();
-              p.isActiveDevice = false;
-              await p.save();
-            }
-          } catch (e) { console.error("cleanup update error:", e.message); }
-
+          const participant = await liveSessionParticipant.findOne({ sessionId: sid, userId: meta.userId }) 
+            || await liveSessionParticipant.findOne({ socketId: socket.id });
+          if (participant) {
+            participant.status = "LEFT";
+            participant.leftAt = new Date();
+            participant.isActiveDevice = false;
+            await participant.save();
+          }
           state.viewers.delete(socket.id);
           io.to(sid).emit("user_left", { userId: meta.userId, socketId: socket.id });
         } else {
-          // streamer left — pause session (or END depending on your business rules)
           state.streamerSocketId = null;
-
-          // 🔹 Fixed: use sessionId field instead of _id
           const session = await liveSession.findOne({ sessionId: sid });
           if (session) {
             session.status = "PAUSED"; // or "ENDED"
             await session.save();
           }
-
           io.to(sid).emit("session_paused_or_ended_by_streamer");
         }
 
@@ -451,12 +395,10 @@ export default function setupIntegratedSocket(server) {
     socket.on("leave_room", cleanupSocketFromRoom);
     socket.on("disconnect", cleanupSocketFromRoom);
 
-    // =========================
-    // ===== RECORDING =====
-    // =========================
+    // ========= RECORDING =========
     socket.on("save_recording", async ({ sessionId, recordingFiles }) => {
       try {
-        const session = await liveSession.findOne({ sessionId }); // <- fixed
+        const session = await liveSession.findOne({ sessionId });
         if (!session) return;
         session.recordingUrl = [...(session.recordingUrl || []), ...recordingFiles];
         await session.save();
@@ -466,12 +408,12 @@ export default function setupIntegratedSocket(server) {
         socket.emit("error_message", "Recording save failed");
       }
     });
-  }); // connection
+  });
 
   return io;
 }
 
-// ======= Get IO Instance =======
+// ===== Get IO Instance =====
 export const getIO = () => {
   if (!io) throw new Error("Socket.io not initialized yet");
   return io;
