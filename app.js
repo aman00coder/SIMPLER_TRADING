@@ -68,7 +68,7 @@ app.use(session({
 
 app.get("/", (req, res) => {
     res.json({
-        message: "🚀✨ Server is running successfully 🌟"
+        message: "🚀✨ Server is running successfullydffsafsfs 🌟"
     });
 });
 
