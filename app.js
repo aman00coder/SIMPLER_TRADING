@@ -14,8 +14,7 @@ import morgan from 'morgan';
 import http from 'http';
 import setupIntegratedSocket from './app/services/socket.integrated.js';
 
-import mediasoup from 'mediasoup'; // ✅ Mediasoup import
-
+import mediasoup from 'mediasoup'; 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -68,7 +67,7 @@ app.use(session({
 
 app.get("/", (req, res) => {
     res.json({
-        message: "🚀✨ Server is running successfullydffsafsfs 🌟"
+        message: "🚀✨ Server is running successfully 🌟"
     });
 });
 
