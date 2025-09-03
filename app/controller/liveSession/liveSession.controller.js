@@ -269,39 +269,32 @@ export const endLiveSession = async (req, res) => {
       return sendErrorResponse(res, "All fields required", 400);
     }
 
-    // ✅ Only sessionId is used
     const liveSession = await liveSessionModel.findOne({ sessionId });
     if (!liveSession) {
       return sendErrorResponse(res, "Live session not found", 404);
     }
 
-    // ✅ Check if user is the streamer
     if (liveSession.streamerId.toString() !== userId) {
       return sendErrorResponse(res, "Unauthorized to end this session", 401);
     }
 
-    // ✅ Update session status
     liveSession.status = "ENDED";
     liveSession.endTime = new Date();
     await liveSession.save();
 
-    // ✅ Close linked whiteboard if exists
     if (liveSession.whiteboardId) {
       await whiteBoardModel.findByIdAndUpdate(liveSession.whiteboardId, {
         $set: { status: "CLOSED" }
       });
     }
 
-    // ✅ Emit via socket.io if instance exists
-    const io = req.app.get("io");
-    if (io) {
-      io.to(sessionId).emit("session_ended", {
-        sessionId,
-        message: "Live session has ended by the mentor."
-      });
-    }
+    // ✅ ab getIO() use karna hai
+    const io = getIO();  
+    io.to(sessionId).emit("session_ended", {
+      sessionId,
+      message: "Live session has ended by the mentor."
+    });
 
-    // ✅ Clean up WebRTC peers
     if (global.webrtcPeers && global.webrtcPeers[sessionId]) {
       Object.values(global.webrtcPeers[sessionId]).forEach(peer => {
         try { peer.close(); } catch (e) {}
@@ -316,6 +309,7 @@ export const endLiveSession = async (req, res) => {
     return sendErrorResponse(res, "Internal server error", 500);
   }
 };
+
 
 
 

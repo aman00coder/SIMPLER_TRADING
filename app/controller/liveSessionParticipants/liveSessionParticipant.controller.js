@@ -7,13 +7,14 @@ import { sendSuccessResponse, sendErrorResponse } from "../../responses/response
 import { errorEn, successEn } from "../../responses/message.js";
 import { ROLE_MAP } from "../../constant/role.js";
 import { v4 as uuidv4 } from "uuid";
+import { getIO } from "../../services/socket.integrated.js"; // ✅ add this
 
 // ===========================
 // Join Participant (BRD-compliant)
 // ===========================
 export const joinParticipant = async (req, res) => {
     try {
-        const { sessionId, roomCode } = req.body; // frontend can send either
+        const { sessionId, roomCode } = req.body; 
         const userId = req.tokenData?.userId;
         const userRole = req.tokenData?.role || ROLE_MAP.VIEWER;
         const socketId = req.body.socketId || req.headers["x-socket-id"];
@@ -23,7 +24,6 @@ export const joinParticipant = async (req, res) => {
             return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
         }
 
-        // 🔹 Resolve sessionId from roomCode if not provided
         let sessionExists;
         if (sessionId) {
             sessionExists = await liveSessionModel.findOne({ sessionId });
@@ -37,7 +37,6 @@ export const joinParticipant = async (req, res) => {
 
         const actualSessionId = sessionExists.sessionId;
 
-        // 🔹 Rest of the code uses actualSessionId instead of sessionId
         let participant = await liveSessionParticipantModel.findOne({ sessionId: actualSessionId, userId, deviceSessionId });
 
         if (participant) {
@@ -76,7 +75,6 @@ export const joinParticipant = async (req, res) => {
             });
         }
 
-        // 🔹 Update session stats & whiteboard sync
         const totalActive = await liveSessionParticipantModel.countDocuments({ sessionId: actualSessionId, status: "JOINED" });
         await liveSessionModel.updateOne(
             { sessionId: actualSessionId },
@@ -103,18 +101,16 @@ export const joinParticipant = async (req, res) => {
             );
         }
 
-        // 🔹 Emit socket event
-        const io = req.app.get("io");
-        if (io) {
-            io.to(actualSessionId).emit("participant:joined", {
-                sessionId: actualSessionId,
-                userId,
-                deviceSessionId,
-                socketId,
-                role: participant.role,
-                status: participant.status,
-            });
-        }
+        // ✅ use getIO
+        const io = getIO();
+        io.to(actualSessionId).emit("participant:joined", {
+            sessionId: actualSessionId,
+            userId,
+            deviceSessionId,
+            socketId,
+            role: participant.role,
+            status: participant.status,
+        });
 
         return sendSuccessResponse(res, participant, successEn.CREATED, HttpStatus.CREATED);
 
@@ -123,7 +119,6 @@ export const joinParticipant = async (req, res) => {
         return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 };
-
 
 // ===========================
 // Leave Participant
@@ -138,7 +133,6 @@ export const leaveParticipant = async (req, res) => {
             return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
         }
 
-        // 🔹 Resolve sessionId from roomCode if not provided
         let sessionExists;
         if (sessionId) {
             sessionExists = await liveSessionModel.findOne({ sessionId });
@@ -169,15 +163,13 @@ export const leaveParticipant = async (req, res) => {
         participant.activityLog.push({ type: "leave", timestamp: new Date() });
         await participant.save();
 
-        const io = req.app.get("io");
-        if (io) {
-            io.to(actualSessionId).emit("participant:left", {
-                sessionId: actualSessionId,
-                userId,
-                deviceSessionId,
-                message: "Participant has left the session"
-            });
-        }
+        const io = getIO();
+        io.to(actualSessionId).emit("participant:left", {
+            sessionId: actualSessionId,
+            userId,
+            deviceSessionId,
+            message: "Participant has left the session"
+        });
 
         return sendSuccessResponse(res, null, successEn.SESSION_LEFT, HttpStatus.OK);
 
@@ -187,8 +179,9 @@ export const leaveParticipant = async (req, res) => {
     }
 };
 
-
-
+// ===========================
+// Kick Participant
+// ===========================
 export const kickParticipant = async (req, res) => {
   try {
     const { sessionId, participantId } = req.params;
@@ -239,20 +232,18 @@ export const kickParticipant = async (req, res) => {
     });
     await participant.save();
 
-    const io = req.app.get("io");
-    if (io) {
-      io.to(actualSessionId).emit("participant:kicked", {
-        sessionId: actualSessionId,
-        participantId,
-        userId: participant.userId,
-        actionBy: moderatorId,
-        reason: participant.reason
-      });
-      io.to(participant.socketId).emit("session:kicked", {
-        sessionId: actualSessionId,
-        reason: participant.reason
-      });
-    }
+    const io = getIO();
+    io.to(actualSessionId).emit("participant:kicked", {
+      sessionId: actualSessionId,
+      participantId,
+      userId: participant.userId,
+      actionBy: moderatorId,
+      reason: participant.reason
+    });
+    io.to(participant.socketId).emit("session:kicked", {
+      sessionId: actualSessionId,
+      reason: participant.reason
+    });
 
     return sendSuccessResponse(res, participant, "Participant kicked successfully", HttpStatus.OK);
 
@@ -262,12 +253,12 @@ export const kickParticipant = async (req, res) => {
   }
 };
 
-
-
-
+// ===========================
+// Toggle Ban Participant
+// ===========================
 export const toggleBanParticipant = async (req, res) => {
   try {
-    const { sessionId, participantId } = req.params;  // ✅ params se lo
+    const { sessionId, participantId } = req.params;  
     const { roomCode, reason } = req.body;
     const moderatorId = req.tokenData?.userId;
 
@@ -296,11 +287,10 @@ export const toggleBanParticipant = async (req, res) => {
       return sendErrorResponse(res, "Participant not found in this session", HttpStatus.NOT_FOUND);
     }
 
-    const io = req.app.get("io");
+    const io = getIO();
 
-    // 🔄 If already banned → unban
     if (participant.status === "BANNED") {
-      participant.status = "JOINED"; // ✅ better than ACTIVE
+      participant.status = "JOINED"; 
       participant.actionBy = moderatorId;
       participant.reason = null;
       participant.leftAt = null;
@@ -315,19 +305,16 @@ export const toggleBanParticipant = async (req, res) => {
 
       await participant.save();
 
-      if (io) {
-        io.to(actualSessionId).emit("participant:unbanned", {
-          sessionId: actualSessionId,
-          participantId,
-          userId: participant.userId,
-          actionBy: moderatorId
-        });
-      }
+      io.to(actualSessionId).emit("participant:unbanned", {
+        sessionId: actualSessionId,
+        participantId,
+        userId: participant.userId,
+        actionBy: moderatorId
+      });
 
       return sendSuccessResponse(res, participant, "Participant unbanned successfully", HttpStatus.OK);
     }
 
-    // 🚫 Ban flow
     participant.status = "BANNED";
     participant.actionBy = moderatorId;
     participant.reason = reason || "Banned by moderator";
@@ -348,20 +335,18 @@ export const toggleBanParticipant = async (req, res) => {
 
     await participant.save();
 
-    if (io) {
-      io.to(actualSessionId).emit("participant:banned", {
-        sessionId: actualSessionId,
-        participantId,
-        userId: participant.userId,
-        actionBy: moderatorId,
-        reason: participant.reason
-      });
+    io.to(actualSessionId).emit("participant:banned", {
+      sessionId: actualSessionId,
+      participantId,
+      userId: participant.userId,
+      actionBy: moderatorId,
+      reason: participant.reason
+    });
 
-      io.to(participant.socketId).emit("session:banned", {
-        sessionId: actualSessionId,
-        reason: participant.reason
-      });
-    }
+    io.to(participant.socketId).emit("session:banned", {
+      sessionId: actualSessionId,
+      reason: participant.reason
+    });
 
     return sendSuccessResponse(res, participant, "Participant banned successfully", HttpStatus.OK);
 
@@ -371,19 +356,15 @@ export const toggleBanParticipant = async (req, res) => {
   }
 };
 
-
-
-
-// Helper to get session by sessionId or roomCode
+// ===========================
+// Get Session Participants
+// ===========================
 const getSessionByIdOrCode = async ({ sessionId, roomCode }) => {
     if (sessionId) return await liveSessionModel.findOne({ sessionId });
     if (roomCode) return await liveSessionModel.findOne({ roomCode, status: "ACTIVE" });
     return null;
 };
 
-// ===========================
-// Get All Participants (with role)
-// ===========================
 export const getSessionParticipants = async (req, res) => {
     try {
         const { sessionId, roomCode } = req.params;
@@ -487,6 +468,24 @@ export const getSingleParticipant = async (req, res) => {
 };
 
 // ===========================
+// Helper Function
+// ===========================
+const findSessionAndParticipant = async ({ sessionId, roomCode, participantId, userId }) => {
+    if (!participantId || !userId) return { error: errorEn.ALL_FIELDS_REQUIRED };
+
+    const session = await getSessionByIdOrCode({ sessionId, roomCode });
+    if (!session) return { error: errorEn.LIVE_SESSION_NOT_FOUND };
+
+    const participant = await liveSessionParticipantModel.findOne({
+        _id: participantId,
+        sessionId: session.sessionId,
+    });
+    if (!participant) return { error: errorEn.LIVE_SESSION_PARTICIPANT_NOT_FOUND };
+
+    return { session, participant };
+};
+
+// ===========================
 // Update Engagement
 // ===========================
 export const updateEngagement = async (req, res) => {
@@ -495,13 +494,9 @@ export const updateEngagement = async (req, res) => {
         const userId = req.tokenData?.userId;
         const updates = req.body;
 
-        if (!participantId || !userId) return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
-
-        const session = await getSessionByIdOrCode({ sessionId, roomCode });
-        if (!session) return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
-
-        const participant = await liveSessionParticipantModel.findOne({ _id: participantId, sessionId: session.sessionId });
-        if (!participant) return sendErrorResponse(res, errorEn.LIVE_SESSION_PARTICIPANT_NOT_FOUND, HttpStatus.NOT_FOUND);
+        const { error, session, participant } =
+            await findSessionAndParticipant({ sessionId, roomCode, participantId, userId });
+        if (error) return sendErrorResponse(res, error, HttpStatus.BAD_REQUEST);
 
         const activityLogs = [];
 
@@ -509,60 +504,50 @@ export const updateEngagement = async (req, res) => {
             participant.micStatus = updates.micStatus;
             activityLogs.push({ type: "mic", value: updates.micStatus ? "ON" : "OFF", actionBy: userId });
         }
-
         if (updates.camStatus !== undefined) {
             participant.camStatus = updates.camStatus;
             activityLogs.push({ type: "cam", value: updates.camStatus ? "ON" : "OFF", actionBy: userId });
         }
-
         if (updates.handRaised !== undefined) {
             participant.handRaised = updates.handRaised;
             activityLogs.push({ type: "hand", value: updates.handRaised ? "RAISED" : "LOWERED", actionBy: userId });
         }
-
         if (updates.screenShareStatus !== undefined) {
             participant.screenShareStatus = updates.screenShareStatus;
             activityLogs.push({ type: "screenShare", value: updates.screenShareStatus ? "STARTED" : "STOPPED", actionBy: userId });
         }
-
         if (updates.reaction) {
             participant.reactions.push(updates.reaction);
             activityLogs.push({ type: "reaction", value: updates.reaction, actionBy: userId });
         }
-
         if (updates.chatMessagesCount !== undefined) {
             participant.chatMessagesCount += Number(updates.chatMessagesCount);
             activityLogs.push({ type: "chat", value: `+${updates.chatMessagesCount} message(s)`, actionBy: userId });
         }
-
         if (updates.pollResponse) {
             participant.pollResponses.push(updates.pollResponse);
             activityLogs.push({ type: "poll", value: JSON.stringify(updates.pollResponse), actionBy: userId });
         }
-
         if (updates.notesTaken !== undefined) {
             participant.notesTaken = updates.notesTaken;
             activityLogs.push({ type: "notes", value: updates.notesTaken ? "TAKEN" : "NOT TAKEN", actionBy: userId });
         }
-
         if (updates.durationConnected !== undefined) {
             participant.durationConnected += Number(updates.durationConnected);
             activityLogs.push({ type: "time", value: `+${updates.durationConnected} sec connected`, actionBy: userId });
         }
 
         participant.lastActiveAt = new Date();
-
         if (activityLogs.length > 0) participant.activityLog.push(...activityLogs);
-
         await participant.save();
 
-        const io = req.app.get("io");
-        if (io) {
-            io.to(session.sessionId).emit("participant:engagementUpdated", { participantId: participant._id, updates });
-        }
+        // socket emit
+        req.app.get("io")?.to(session.sessionId).emit("participant:engagementUpdated", {
+            participantId: participant._id,
+            updates,
+        });
 
         return sendSuccessResponse(res, participant, "Engagement updated successfully", HttpStatus.OK);
-
     } catch (error) {
         console.error("Error in updateEngagement:", error);
         return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
@@ -578,13 +563,9 @@ export const updateNetworkStats = async (req, res) => {
         const userId = req.tokenData?.userId;
         const { networkQuality, latency, jitter, packetLoss } = req.body;
 
-        if (!participantId || !userId) return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
-
-        const session = await getSessionByIdOrCode({ sessionId, roomCode });
-        if (!session) return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
-
-        const participant = await liveSessionParticipantModel.findOne({ _id: participantId, sessionId: session.sessionId });
-        if (!participant) return sendErrorResponse(res, errorEn.LIVE_SESSION_PARTICIPANT_NOT_FOUND, HttpStatus.NOT_FOUND);
+        const { error, session, participant } =
+            await findSessionAndParticipant({ sessionId, roomCode, participantId, userId });
+        if (error) return sendErrorResponse(res, error, HttpStatus.BAD_REQUEST);
 
         if (networkQuality !== undefined) participant.networkQuality = networkQuality;
         if (latency !== undefined) participant.latency = latency;
@@ -592,22 +573,28 @@ export const updateNetworkStats = async (req, res) => {
         if (packetLoss !== undefined) participant.packetLoss = packetLoss;
 
         participant.lastActiveAt = new Date();
-
         participant.activityLog.push({
             type: "network",
-            value: JSON.stringify({ networkQuality: participant.networkQuality, latency: participant.latency, jitter: participant.jitter, packetLoss: participant.packetLoss }),
+            value: JSON.stringify({
+                networkQuality: participant.networkQuality,
+                latency: participant.latency,
+                jitter: participant.jitter,
+                packetLoss: participant.packetLoss,
+            }),
             actionBy: userId,
         });
 
         await participant.save();
 
-        const io = req.app.get("io");
-        if (io) {
-            io.to(session.sessionId).emit("participant:networkUpdated", { participantId: participant._id, networkQuality: participant.networkQuality, latency: participant.latency, jitter: participant.jitter, packetLoss: participant.packetLoss });
-        }
+        req.app.get("io")?.to(session.sessionId).emit("participant:networkUpdated", {
+            participantId: participant._id,
+            networkQuality: participant.networkQuality,
+            latency: participant.latency,
+            jitter: participant.jitter,
+            packetLoss: participant.packetLoss,
+        });
 
         return sendSuccessResponse(res, participant, "Network stats updated successfully", HttpStatus.OK);
-
     } catch (error) {
         console.error("Error in updateNetworkStats:", error);
         return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
@@ -623,16 +610,12 @@ export const updateChatCount = async (req, res) => {
         const userId = req.tokenData?.userId;
         const { count } = req.body;
 
-        if (!participantId || !userId || count === undefined) return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
-
         const increment = Number(count);
         if (isNaN(increment)) return sendErrorResponse(res, "Chat count must be a valid number", HttpStatus.BAD_REQUEST);
 
-        const session = await getSessionByIdOrCode({ sessionId, roomCode });
-        if (!session) return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
-
-        const participant = await liveSessionParticipantModel.findOne({ _id: participantId, sessionId: session.sessionId });
-        if (!participant) return sendErrorResponse(res, errorEn.LIVE_SESSION_PARTICIPANT_NOT_FOUND, HttpStatus.NOT_FOUND);
+        const { error, session, participant } =
+            await findSessionAndParticipant({ sessionId, roomCode, participantId, userId });
+        if (error) return sendErrorResponse(res, error, HttpStatus.BAD_REQUEST);
 
         participant.chatMessagesCount += increment;
         participant.lastActiveAt = new Date();
@@ -645,16 +628,17 @@ export const updateChatCount = async (req, res) => {
 
         await participant.save();
 
-        const io = req.app.get("io");
-        if (io) {
-            io.to(session.sessionId).emit("participant:chatUpdated", { participantId: participant._id, chatMessagesCount: participant.chatMessagesCount, lastActiveAt: participant.lastActiveAt });
-        }
+        req.app.get("io")?.to(session.sessionId).emit("participant:chatUpdated", {
+            participantId: participant._id,
+            chatMessagesCount: participant.chatMessagesCount,
+            lastActiveAt: participant.lastActiveAt,
+        });
 
         return sendSuccessResponse(res, participant, "Chat count updated successfully", HttpStatus.OK);
-
     } catch (error) {
         console.error("Error in updateChatCount:", error);
         return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 };
+
 
