@@ -54,26 +54,42 @@ function getIceServersFromEnv() {
   const isProduction = process.env.NODE_ENV === "production";
   console.log(`Getting ICE servers for ${isProduction ? "production" : "development"} environment`);
 
+  const servers = [];
+
+  // Add STUN servers
   const stunUrls = (process.env.STUN_URLS || "stun:stun.l.google.com:19302,stun:global.stun.twilio.com:3478")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const servers = [];
-
   stunUrls.forEach((url) => {
     if (url) servers.push({ urls: url });
   });
 
-  // Uncomment and configure TURN for production if needed
-  // if (isProduction) { ... }
+  // Add TURN servers for production
+  if (isProduction) {
+    const turnUrls = (process.env.TURN_URLS || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const turnUsername = process.env.TURN_USERNAME;
+    const turnPassword = process.env.TURN_PASSWORD;
 
+    turnUrls.forEach((url) => {
+      if (url && turnUsername && turnPassword) {
+        servers.push({
+          urls: url,
+          username: turnUsername,
+          credential: turnPassword
+        });
+      }
+    });
+  }
+
+  // Fallback to default STUN servers if none configured
   if (servers.length === 0) {
     servers.push({ urls: "stun:stun.l.google.com:19302" });
     servers.push({ urls: "stun:global.stun.twilio.com:3478" });
   }
 
-  console.log(`Found ${servers.length} ICE servers`);
+  console.log(`Found ${servers.length} ICE servers:`, servers);
   return servers;
 }
 
@@ -218,7 +234,14 @@ export default async function setupIntegratedSocket(server) {
     socket.emit("environment_info", {
       environment: process.env.NODE_ENV,
       hasMediasoup: true,
-      hasTURN: false, // Currently no TURN in development
+      hasTURN: process.env.NODE_ENV === "production" && process.env.TURN_URLS,
+    });
+
+    // Get ICE Servers
+    socket.on("get_ice_servers", (callback) => {
+      console.log(`ICE servers request from socket: ${socket.id}`);
+      const iceServers = getIceServersFromEnv();
+      callback(iceServers);
     });
 
     // =========================
@@ -423,6 +446,10 @@ export default async function setupIntegratedSocket(server) {
         socket.join(sid);
         console.log(`Socket ${socket.id} joined room ${sid}`);
 
+        // Send ICE servers to client upon joining
+        const iceServers = getIceServersFromEnv();
+        socket.emit("ice_servers", iceServers);
+
         if (userRole === ROLE_MAP.STREAMER) {
           console.log("User is a streamer");
           if (state.streamerSocketId && state.streamerSocketId !== socket.id) {
@@ -436,6 +463,7 @@ export default async function setupIntegratedSocket(server) {
             roomCode: session.roomCode,
             hasMediasoup: !!state.router,
             environment: process.env.NODE_ENV,
+            iceServers: iceServers
           });
           console.log(`Streamer ${socket.id} joined room ${sid}`);
         } else {
@@ -447,6 +475,7 @@ export default async function setupIntegratedSocket(server) {
             whiteboardId: state.whiteboardId,
             hasMediasoup: !!state.router,
             environment: process.env.NODE_ENV,
+            iceServers: iceServers
           });
           console.log(`Viewer ${socket.id} joined room ${sid}`);
           if (state.streamerSocketId) {
@@ -693,13 +722,6 @@ export default async function setupIntegratedSocket(server) {
         console.error("consumer-resume error:", error);
         callback({ error: error.message });
       }
-    });
-
-    // Get ICE Servers
-    socket.on("get_ice_servers", (callback) => {
-      console.log(`ICE servers request from socket: ${socket.id}`);
-      const iceServers = getIceServersFromEnv();
-      callback(iceServers);
     });
 
     // =========================
