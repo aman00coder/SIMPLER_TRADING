@@ -75,4 +75,28 @@ router.put(
   liveSessionParticipantController.toggleBanParticipant
 );
 
+
+
+// Connect transport
+router.post(
+  "/connectTransport",
+  ADMINSTREAMERVIEWERAuth,
+  liveSessionParticipantController.connectTransport
+);
+
+// Produce media (Streamer/Viewer can produce - camera/mic/screen)
+router.post(
+  "/produce",
+  ADMINSTREAMERVIEWERAuth,
+  liveSessionParticipantController.produce
+);
+
+// Consume media (Streamer/Viewer consume other's media)
+router.post(
+  "/consume",
+  ADMINSTREAMERVIEWERAuth,
+  liveSessionParticipantController.consume
+);
+
+
 export default router;

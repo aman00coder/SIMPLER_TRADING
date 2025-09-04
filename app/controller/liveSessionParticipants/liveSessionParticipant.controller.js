@@ -13,243 +13,190 @@ import { getIO } from "../../services/socket.integrated.js"; // ✅ add this
 // Join Participant (BRD-compliant)
 // ===========================
 export const joinParticipant = async (req, res) => {
-    try {
-        const { sessionId, roomCode } = req.body; 
-        const userId = req.tokenData?.userId;
-        const userRole = req.tokenData?.role || ROLE_MAP.VIEWER;
-        const socketId = req.body.socketId || req.headers["x-socket-id"];
-        const deviceSessionId = req.body.deviceSessionId || uuidv4();
+  try {
+    const {
+      sessionId,
+      deviceSessionId,
+      role,
+      networkStats,
+      engagementStats,
+      geoLocation,
+      socketId,
+    } = req.body;
+    const participantId = req.tokenData._id;
 
-        if (!userId || !socketId || (!sessionId && !roomCode)) {
-            return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
-        }
-
-        let sessionExists;
-        if (sessionId) {
-            sessionExists = await liveSessionModel.findOne({ sessionId });
-        } else if (roomCode) {
-            sessionExists = await liveSessionModel.findOne({ roomCode, status: "ACTIVE" });
-        }
-
-        if (!sessionExists) {
-            return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
-        }
-
-        const actualSessionId = sessionExists.sessionId;
-
-        let participant = await liveSessionParticipantModel.findOne({ sessionId: actualSessionId, userId, deviceSessionId });
-
-        if (participant) {
-            if (participant.status === "LEFT") {
-                participant.status = "JOINED";
-                participant.joinedAt = new Date();
-                participant.leftAt = null;
-                participant.isActiveDevice = true;
-                participant.socketId = socketId;
-                participant.lastActiveAt = new Date();
-                participant.activityLog.push({ type: "join", timestamp: new Date() });
-                await participant.save();
-            } else {
-                return sendErrorResponse(res, "User already joined this session on this device", HttpStatus.BAD_REQUEST);
-            }
-        } else {
-            participant = await liveSessionParticipantModel.create({
-                sessionId: actualSessionId,
-                userId,
-                role: userRole,
-                socketId,
-                deviceSessionId,
-                status: "JOINED",
-                isActiveDevice: true,
-                ipAddress: req.ip,
-                deviceInfo: req.headers["user-agent"],
-                joinedAt: new Date(),
-                micStatus: true,
-                camStatus: true,
-                handRaised: false,
-                reactions: [],
-                screenShareStatus: false,
-                chatMessagesCount: 0,
-                activityLog: [{ type: "join", timestamp: new Date() }],
-                lastActiveAt: new Date(),
-            });
-        }
-
-        const totalActive = await liveSessionParticipantModel.countDocuments({ sessionId: actualSessionId, status: "JOINED" });
-        await liveSessionModel.updateOne(
-            { sessionId: actualSessionId },
-            {
-                $inc: { totalJoins: 1 },
-                $set: { peakParticipants: Math.max(totalActive, sessionExists.peakParticipants || 0) },
-                $addToSet: { participants: userId },
-                $setOnInsert: { actualStartTime: new Date() }
-            }
-        );
-
-        if (sessionExists.whiteboardId) {
-            await whiteboardModel.findByIdAndUpdate(
-                sessionExists.whiteboardId,
-                {
-                    $addToSet: {
-                        participants: {
-                            user: userId,
-                            role: userRole === ROLE_MAP.STREAMER ? "editor" : "viewer",
-                            joinedAt: new Date(),
-                        }
-                    }
-                }
-            );
-        }
-
-        // ✅ use getIO
-        const io = getIO();
-        io.to(actualSessionId).emit("participant:joined", {
-            sessionId: actualSessionId,
-            userId,
-            deviceSessionId,
-            socketId,
-            role: participant.role,
-            status: participant.status,
-        });
-
-        return sendSuccessResponse(res, participant, successEn.CREATED, HttpStatus.CREATED);
-
-    } catch (error) {
-        console.error("joinParticipant error:", error);
-        return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+    // Ensure session exists
+    let session = await liveSession.findById(sessionId);
+    if (!session) {
+      return sendErrorResponse(res, "Session not found", 404);
     }
+
+    // Check ban
+    const isBanned = session.bannedParticipants.includes(participantId);
+    if (isBanned) {
+      return sendErrorResponse(res, "You are banned from this session", 403);
+    }
+
+    // Check duplicate
+    const existingParticipant = await liveSessionParticipant.findOne({
+      sessionId,
+      participantId,
+      deviceSessionId,
+    });
+    if (existingParticipant) {
+      return sendErrorResponse(res, "Already joined", 400);
+    }
+
+    // Save participant
+    const participant = new liveSessionParticipant({
+      sessionId,
+      participantId,
+      deviceSessionId,
+      role,
+      networkStats,
+      engagementStats,
+      geoLocation,
+    });
+    await participant.save();
+
+    // Add to session
+    session.participants.push(participant._id);
+    await session.save();
+
+    // ✅ Setup mediasoup router + transport
+    if (!global.mediasoupRouters) global.mediasoupRouters = {};
+    if (!global.transports) global.transports = {};
+
+    if (!global.mediasoupRouters[sessionId]) {
+      const mediaCodecs = [
+        {
+          kind: "audio",
+          mimeType: "audio/opus",
+          clockRate: 48000,
+          channels: 2,
+        },
+        {
+          kind: "video",
+          mimeType: "video/VP8",
+          clockRate: 90000,
+        },
+      ];
+      global.mediasoupRouters[sessionId] =
+        await global.mediasoupWorker.createRouter({ mediaCodecs });
+    }
+
+    const router = global.mediasoupRouters[sessionId];
+    const transport = await router.createWebRtcTransport({
+      listenIps: [
+        {
+          ip: process.env.MEDIA_SOUP_LISTEN_IP || "0.0.0.0",
+          announcedIp: process.env.MEDIA_SOUP_ANNOUNCED_IP || "127.0.0.1",
+        },
+      ],
+      enableUdp: true,
+      enableTcp: true,
+      preferUdp: true,
+    });
+
+    if (!global.transports[sessionId]) global.transports[sessionId] = {};
+    global.transports[sessionId][deviceSessionId] = transport;
+
+    // Emit to socket
+    getIO().to(socketId).emit("webrtc:createTransport", {
+      id: transport.id,
+      iceParameters: transport.iceParameters,
+      iceCandidates: transport.iceCandidates,
+      dtlsParameters: transport.dtlsParameters,
+    });
+
+    return sendSuccessResponse(
+      res,
+      participant,
+      "Participant joined successfully",
+      200
+    );
+  } catch (error) {
+    return sendErrorResponse(res, error.message, 500);
+  }
 };
+
 
 // ===========================
 // Leave Participant
 // ===========================
 export const leaveParticipant = async (req, res) => {
-    try {
-        const { sessionId, roomCode } = req.body;
-        const userId = req.tokenData?.userId;
-        const deviceSessionId = req.body.deviceSessionId;
+  try {
+    const { sessionId, deviceSessionId } = req.body;
+    const participantId = req.tokenData._id;
 
-        if (!userId || !deviceSessionId || (!sessionId && !roomCode)) {
-            return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
-        }
+    const participant = await liveSessionParticipant.findOne({
+      sessionId,
+      participantId,
+      deviceSessionId,
+    });
 
-        let sessionExists;
-        if (sessionId) {
-            sessionExists = await liveSessionModel.findOne({ sessionId });
-        } else if (roomCode) {
-            sessionExists = await liveSessionModel.findOne({ roomCode, status: "ACTIVE" });
-        }
-
-        if (!sessionExists) {
-            return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
-        }
-
-        const actualSessionId = sessionExists.sessionId;
-
-        const participant = await liveSessionParticipantModel.findOne({ sessionId: actualSessionId, userId, deviceSessionId });
-        if (!participant) {
-            return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
-        }
-
-        participant.status = "LEFT";
-        participant.leftAt = new Date();
-        participant.isActiveDevice = false;
-
-        if (participant.joinedAt) {
-            const durationMs = new Date() - new Date(participant.joinedAt);
-            participant.durationConnected += Math.floor(durationMs / 60000);
-        }
-
-        participant.activityLog.push({ type: "leave", timestamp: new Date() });
-        await participant.save();
-
-        const io = getIO();
-        io.to(actualSessionId).emit("participant:left", {
-            sessionId: actualSessionId,
-            userId,
-            deviceSessionId,
-            message: "Participant has left the session"
-        });
-
-        return sendSuccessResponse(res, null, successEn.SESSION_LEFT, HttpStatus.OK);
-
-    } catch (error) {
-        console.error("leaveParticipant error:", error);
-        return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+    if (!participant) {
+      return sendErrorResponse(res, "Participant not found", 404);
     }
+
+    // Transport cleanup
+    if (global.transports?.[sessionId]?.[deviceSessionId]) {
+      try {
+        await global.transports[sessionId][deviceSessionId].close();
+      } catch {}
+      delete global.transports[sessionId][deviceSessionId];
+    }
+
+    // Remove participant
+    await liveSession.findByIdAndUpdate(sessionId, {
+      $pull: { participants: participant._id },
+    });
+    await participant.remove();
+
+    getIO().to(sessionId).emit("participant:leave", { participantId });
+
+    return sendSuccessResponse(res, null, "Left session", 200);
+  } catch (error) {
+    return sendErrorResponse(res, error.message, 500);
+  }
 };
+
 
 // ===========================
 // Kick Participant
 // ===========================
 export const kickParticipant = async (req, res) => {
   try {
-    const { sessionId, participantId } = req.params;
-    const { roomCode, reason } = req.body; 
-    const moderatorId = req.tokenData?.userId;
+    const { sessionId, participantId } = req.body;
 
-    if (!participantId || !moderatorId || (!sessionId && !roomCode)) {
-      return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
-    }
-
-    let sessionExists;
-    if (sessionId) {
-      sessionExists = await liveSessionModel.findOne({ sessionId });
-    } else if (roomCode) {
-      sessionExists = await liveSessionModel.findOne({ roomCode, status: "ACTIVE" });
-    }
-
-    if (!sessionExists) {
-      return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
-    }
-
-    const actualSessionId = sessionExists.sessionId;
-
-    const participant = await liveSessionParticipantModel.findOne({
-      _id: participantId,
-      sessionId: actualSessionId
+    const participant = await liveSessionParticipant.findOne({
+      sessionId,
+      participantId,
     });
     if (!participant) {
-      return sendErrorResponse(res, "Participant not found in this session", HttpStatus.NOT_FOUND);
+      return sendErrorResponse(res, "Participant not found", 404);
     }
 
-    participant.status = "KICKED";
-    participant.actionBy = moderatorId;
-    participant.reason = reason || "Removed by moderator";
-    participant.leftAt = new Date();
-    participant.isActiveDevice = false;
-
-    if (participant.joinedAt) {
-      const durationMs = new Date() - new Date(participant.joinedAt);
-      participant.durationConnected += Math.floor(durationMs / 60000);
+    // Cleanup transport
+    if (global.transports?.[sessionId]?.[participant.deviceSessionId]) {
+      try {
+        await global.transports[sessionId][
+          participant.deviceSessionId
+        ].close();
+      } catch {}
+      delete global.transports[sessionId][participant.deviceSessionId];
     }
 
-    participant.activityLog.push({
-      type: "kick",
-      timestamp: new Date(),
-      value: reason || "Removed by moderator",
-      actionBy: moderatorId
+    await liveSession.findByIdAndUpdate(sessionId, {
+      $pull: { participants: participant._id },
     });
-    await participant.save();
+    await participant.remove();
 
-    const io = getIO();
-    io.to(actualSessionId).emit("participant:kicked", {
-      sessionId: actualSessionId,
-      participantId,
-      userId: participant.userId,
-      actionBy: moderatorId,
-      reason: participant.reason
-    });
-    io.to(participant.socketId).emit("session:kicked", {
-      sessionId: actualSessionId,
-      reason: participant.reason
-    });
+    getIO().to(sessionId).emit("participant:kicked", { participantId });
 
-    return sendSuccessResponse(res, participant, "Participant kicked successfully", HttpStatus.OK);
-
+    return sendSuccessResponse(res, null, "Participant kicked", 200);
   } catch (error) {
-    console.error("Error in kickParticipant:", error);
-    return sendErrorResponse(res, error.message, HttpStatus.INTERNAL_SERVER_ERROR);
+    return sendErrorResponse(res, error.message, 500);
   }
 };
 
@@ -258,101 +205,34 @@ export const kickParticipant = async (req, res) => {
 // ===========================
 export const toggleBanParticipant = async (req, res) => {
   try {
-    const { sessionId, participantId } = req.params;  
-    const { roomCode, reason } = req.body;
-    const moderatorId = req.tokenData?.userId;
+    const { sessionId, participantId } = req.body;
+    const session = await liveSession.findById(sessionId);
 
-    if (!participantId || !moderatorId || (!sessionId && !roomCode)) {
-      return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
+    if (!session) {
+      return sendErrorResponse(res, "Session not found", 404);
     }
 
-    let sessionExists;
-    if (sessionId) {
-      sessionExists = await liveSessionModel.findOne({ sessionId });
-    } else if (roomCode) {
-      sessionExists = await liveSessionModel.findOne({ roomCode, status: "ACTIVE" });
+    const isBanned = session.bannedParticipants.includes(participantId);
+    if (isBanned) {
+      session.bannedParticipants.pull(participantId);
+      await session.save();
+      return sendSuccessResponse(res, null, "Participant unbanned", 200);
+    } else {
+      session.bannedParticipants.push(participantId);
+      await session.save();
+
+      // Transport cleanup
+      if (global.transports?.[sessionId]?.[participantId]) {
+        try {
+          await global.transports[sessionId][participantId].close();
+        } catch {}
+        delete global.transports[sessionId][participantId];
+      }
+
+      return sendSuccessResponse(res, null, "Participant banned", 200);
     }
-
-    if (!sessionExists) {
-      return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
-    }
-    const actualSessionId = sessionExists.sessionId;
-
-    const participant = await liveSessionParticipantModel.findOne({
-      _id: participantId,
-      sessionId: actualSessionId
-    });
-
-    if (!participant) {
-      return sendErrorResponse(res, "Participant not found in this session", HttpStatus.NOT_FOUND);
-    }
-
-    const io = getIO();
-
-    if (participant.status === "BANNED") {
-      participant.status = "JOINED"; 
-      participant.actionBy = moderatorId;
-      participant.reason = null;
-      participant.leftAt = null;
-      participant.isActiveDevice = true;
-
-      participant.activityLog.push({
-        type: "unban",
-        timestamp: new Date(),
-        value: "Unbanned by moderator",
-        actionBy: moderatorId
-      });
-
-      await participant.save();
-
-      io.to(actualSessionId).emit("participant:unbanned", {
-        sessionId: actualSessionId,
-        participantId,
-        userId: participant.userId,
-        actionBy: moderatorId
-      });
-
-      return sendSuccessResponse(res, participant, "Participant unbanned successfully", HttpStatus.OK);
-    }
-
-    participant.status = "BANNED";
-    participant.actionBy = moderatorId;
-    participant.reason = reason || "Banned by moderator";
-    participant.leftAt = new Date();
-    participant.isActiveDevice = false;
-
-    if (participant.joinedAt) {
-      const durationMs = new Date() - new Date(participant.joinedAt);
-      participant.durationConnected += Math.floor(durationMs / 60000);
-    }
-
-    participant.activityLog.push({
-      type: "ban",
-      timestamp: new Date(),
-      value: reason || "Banned by moderator",
-      actionBy: moderatorId
-    });
-
-    await participant.save();
-
-    io.to(actualSessionId).emit("participant:banned", {
-      sessionId: actualSessionId,
-      participantId,
-      userId: participant.userId,
-      actionBy: moderatorId,
-      reason: participant.reason
-    });
-
-    io.to(participant.socketId).emit("session:banned", {
-      sessionId: actualSessionId,
-      reason: participant.reason
-    });
-
-    return sendSuccessResponse(res, participant, "Participant banned successfully", HttpStatus.OK);
-
   } catch (error) {
-    console.error("Error in toggleBanParticipant:", error);
-    return sendErrorResponse(res, error.message, HttpStatus.INTERNAL_SERVER_ERROR);
+    return sendErrorResponse(res, error.message, 500);
   }
 };
 
@@ -642,3 +522,81 @@ export const updateChatCount = async (req, res) => {
 };
 
 
+// Connect transport
+export const connectTransport = async (req, res) => {
+  try {
+    const { sessionId, deviceSessionId, dtlsParameters } = req.body;
+
+    const transport = global.transports?.[sessionId]?.[deviceSessionId];
+    if (!transport) return sendErrorResponse(res, "Transport not found", 404);
+
+    await transport.connect({ dtlsParameters });
+    return sendSuccessResponse(res, null, "Transport connected", 200);
+  } catch (error) {
+    return sendErrorResponse(res, error.message, 500);
+  }
+};
+
+// Produce media
+export const produce = async (req, res) => {
+  try {
+    const { sessionId, deviceSessionId, kind, rtpParameters } = req.body;
+
+    const transport = global.transports?.[sessionId]?.[deviceSessionId];
+    if (!transport) return sendErrorResponse(res, "Transport not found", 404);
+
+    const producer = await transport.produce({ kind, rtpParameters });
+    if (!global.producers) global.producers = {};
+    if (!global.producers[sessionId]) global.producers[sessionId] = {};
+    global.producers[sessionId][deviceSessionId] = producer;
+
+    getIO()
+      .to(sessionId)
+      .emit("webrtc:newProducer", { producerId: producer.id, kind });
+
+    return sendSuccessResponse(
+      res,
+      { producerId: producer.id },
+      "Producer created",
+      200
+    );
+  } catch (error) {
+    return sendErrorResponse(res, error.message, 500);
+  }
+};
+
+// Consume media
+export const consume = async (req, res) => {
+  try {
+    const { sessionId, deviceSessionId, producerId, rtpCapabilities } = req.body;
+    const router = global.mediasoupRouters?.[sessionId];
+    if (!router) return sendErrorResponse(res, "Router not found", 404);
+
+    if (!router.canConsume({ producerId, rtpCapabilities })) {
+      return sendErrorResponse(res, "Cannot consume", 400);
+    }
+
+    const transport = global.transports?.[sessionId]?.[deviceSessionId];
+    if (!transport) return sendErrorResponse(res, "Transport not found", 404);
+
+    const consumer = await transport.consume({
+      producerId,
+      rtpCapabilities,
+      paused: false,
+    });
+
+    return sendSuccessResponse(
+      res,
+      {
+        id: consumer.id,
+        producerId,
+        kind: consumer.kind,
+        rtpParameters: consumer.rtpParameters,
+      },
+      "Consumer created",
+      200
+    );
+  } catch (error) {
+    return sendErrorResponse(res, error.message, 500);
+  }
+};

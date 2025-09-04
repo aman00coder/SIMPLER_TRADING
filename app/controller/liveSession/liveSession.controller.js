@@ -15,11 +15,12 @@ const generateRoomCode = () => {
   return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 };
 
-
+/**
+ * Start Live Session
+ */
 export const startLiveSession = async (req, res) => {
   try {
     const io = getIO(); 
-
     const { title, description, endTime, maxParticipants, isPrivate } = req.body;
     const mentorId = req.tokenData?.userId;
 
@@ -27,60 +28,54 @@ export const startLiveSession = async (req, res) => {
       return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
     }
 
-    // 🔹 Backend-generated roomCode
     const roomCode = generateRoomCode();
 
-    // Check duplicate (avoid same active roomCode)
     const existingSession = await liveSessionModel.findOne({ roomCode, status: "ACTIVE" });
     if (existingSession) {
       return sendErrorResponse(res, errorEn.LIVE_SESSION_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
     }
 
-    // Step 1: Create LiveSession first
     const sessionId = uuidv4();
     const liveSession = await liveSessionModel.create({
-    streamerId: mentorId,
-    streamerRole: ROLE_MAP.STREAMER,
-    sessionId,
-    roomCode,
-    title,
-    description,
-    actualStartTime: new Date(),
-    endTime,
-    participants: [],
-    allowedUsers: [],
-    chatMessages: [],
-    recordingUrl: "",
-    maxParticipants: maxParticipants || 100,
-    isPrivate: isPrivate || false,
-    status: "ACTIVE"
+      streamerId: mentorId,
+      streamerRole: ROLE_MAP.STREAMER,
+      sessionId,
+      roomCode,
+      title,
+      description,
+      actualStartTime: new Date(),
+      endTime,
+      participants: [],
+      allowedUsers: [],
+      chatMessages: [],
+      recordingUrl: "",
+      maxParticipants: maxParticipants || 100,
+      isPrivate: isPrivate || false,
+      status: "ACTIVE",
+      totalActiveDuration: 0
     });
 
-    // Step 2: Create whiteboard linked with sessionId
     const whiteboard = await whiteBoardModel.create({
-    whiteboardId: uuidv4(),
-    title,
-    description: description || "",
-    createdBy: mentorId,
-    createdByRole: ROLE_MAP.STREAMER,
-    liveSessionId: liveSession._id, // ✅ required field fulfilled
-    participants: [
+      whiteboardId: uuidv4(),
+      title,
+      description: description || "",
+      createdBy: mentorId,
+      createdByRole: ROLE_MAP.STREAMER,
+      liveSessionId: liveSession._id,
+      participants: [
         {
-        user: mentorId,
-        role: "owner",
-        joinedAt: new Date(),
-        lastActive: new Date(),
-        cursorPosition: {}
+          user: mentorId,
+          role: "owner",
+          joinedAt: new Date(),
+          lastActive: new Date(),
+          cursorPosition: {}
         }
-    ]
+      ]
     });
 
-    // Step 3: Update session with whiteboardId
     liveSession.whiteboardId = whiteboard._id;
     await liveSession.save();
 
-
-    // Step 4: Notify socket layer
     io.emit("session_started", {
       sessionId,
       mentorId,
@@ -105,8 +100,7 @@ export const startLiveSession = async (req, res) => {
 // =========================
 export const pauseLiveSession = async (req, res) => {
   try {
-    const io = getIO(); // ✅ global Socket.io instance
-
+    const io = getIO();
     const { sessionId } = req.params;
     const mentorId = req.tokenData?.userId;
 
@@ -114,13 +108,16 @@ export const pauseLiveSession = async (req, res) => {
     if (!session) return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
 
     if (session.streamerId.toString() !== mentorId)
-    return sendErrorResponse(res, "Unauthorized to pause session", HttpStatus.UNAUTHORIZED);
+      return sendErrorResponse(res, "Unauthorized to pause session", HttpStatus.UNAUTHORIZED);
 
+    // Update active duration
+    if (session.actualStartTime) {
+      session.totalActiveDuration += Math.floor((Date.now() - session.actualStartTime.getTime()) / 1000);
+    }
 
     session.status = "PAUSED";
     await session.save();
 
-    // Socket emit to notify participants
     io.to(sessionId).emit("session_paused", { sessionId });
 
     return sendSuccessResponse(res, session, "Live session paused successfully", HttpStatus.OK);
@@ -136,8 +133,7 @@ export const pauseLiveSession = async (req, res) => {
 // =========================
 export const resumeLiveSession = async (req, res) => {
   try {
-    const io = getIO(); // ✅ global Socket.io instance
-
+    const io = getIO();
     const { sessionId } = req.params;
     const mentorId = req.tokenData?.userId;
 
@@ -145,12 +141,12 @@ export const resumeLiveSession = async (req, res) => {
     if (!session) return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
 
     if (session.streamerId.toString() !== mentorId)
-    return sendErrorResponse(res, "Unauthorized to pause session", HttpStatus.UNAUTHORIZED);
+      return sendErrorResponse(res, "Unauthorized to resume session", HttpStatus.UNAUTHORIZED);
 
     session.status = "ACTIVE";
+    session.actualStartTime = new Date(); // reset
     await session.save();
 
-    // Socket emit to notify participants
     io.to(sessionId).emit("session_resumed", { sessionId });
 
     return sendSuccessResponse(res, session, "Live session resumed successfully", HttpStatus.OK);
@@ -159,7 +155,6 @@ export const resumeLiveSession = async (req, res) => {
     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
-
 
 // =========================
 // Save Whiteboard Recording
@@ -262,6 +257,7 @@ export const getSessionAnalytics = async (req, res) => {
 
 export const endLiveSession = async (req, res) => {
   try {
+    const io = getIO();
     const { sessionId } = req.params;
     const userId = req.tokenData?.userId;
 
@@ -278,6 +274,11 @@ export const endLiveSession = async (req, res) => {
       return sendErrorResponse(res, "Unauthorized to end this session", 401);
     }
 
+    // Final duration update
+    if (liveSession.actualStartTime) {
+      liveSession.totalActiveDuration += Math.floor((Date.now() - liveSession.actualStartTime.getTime()) / 1000);
+    }
+
     liveSession.status = "ENDED";
     liveSession.endTime = new Date();
     await liveSession.save();
@@ -288,18 +289,15 @@ export const endLiveSession = async (req, res) => {
       });
     }
 
-    // ✅ ab getIO() use karna hai
-    const io = getIO();  
     io.to(sessionId).emit("session_ended", {
       sessionId,
       message: "Live session has ended by the mentor."
     });
 
-    if (global.webrtcPeers && global.webrtcPeers[sessionId]) {
-      Object.values(global.webrtcPeers[sessionId]).forEach(peer => {
-        try { peer.close(); } catch (e) {}
-      });
-      delete global.webrtcPeers[sessionId];
+    // ✅ mediasoup transports cleanup
+    if (global.mediasoupRouters && global.mediasoupRouters[sessionId]) {
+      try { await global.mediasoupRouters[sessionId].close(); } catch {}
+      delete global.mediasoupRouters[sessionId];
     }
 
     return sendSuccessResponse(res, liveSession, "Live session ended successfully", 200);
@@ -309,7 +307,6 @@ export const endLiveSession = async (req, res) => {
     return sendErrorResponse(res, "Internal server error", 500);
   }
 };
-
 
 
 
