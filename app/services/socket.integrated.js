@@ -1,13 +1,11 @@
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
-import mongoose from "mongoose";
 import mediasoup from "mediasoup";
 import liveSession from "../model/liveSessions/liveeSession.model.js";
 import liveSessionParticipant from "../model/liveSessionParticipant/liveSessionParticipant.model.js";
 import whiteboardModel from "../model/whiteBoards/whiteBoard.model.js";
 import { ROLE_MAP } from "../constant/role.js";
 import authenticationModel from "../../app/model/Authentication/authentication.model.js";
-import crypto from "crypto";
 
 // ======= Global Variables =======
 let io;
@@ -93,6 +91,7 @@ async function flushCanvasOps(sessionId) {
     return;
   }
   console.log(`Flushing ${ops.length} operations for session: ${sessionId}`);
+
   // clear pending ops + timer
   state.pendingOps = [];
   if (state.flushTimer) {
@@ -161,6 +160,7 @@ export const initWhiteboardRTC = (sessionId, whiteboardId, createdBy) => {
       router: null,
       transports: new Map(),
       producers: new Map(),
+      consumers: new Map(),
     });
     console.log(`New room state created for session: ${sessionId}`);
   } else {
@@ -257,7 +257,7 @@ export default async function setupIntegratedSocket(server) {
         console.log(`Session found: ${session.sessionId}, status: ${session.status}`);
         if (!["SCHEDULED", "ACTIVE", "PAUSED"].includes(session.status)) {
           console.log(`Session is ${session.status}, cannot join`);
-          return socket.emit("error_message", `Session is ${session.status}`);
+          return socket.emit(`error_message`, `Session is ${session.status}`);
         }
 
         if (session.isPrivate) {
@@ -284,6 +284,7 @@ export default async function setupIntegratedSocket(server) {
             router: null,
             transports: new Map(),
             producers: new Map(),
+            consumers: new Map(),
           });
           console.log(`New room state created for session: ${sid}`);
         }
@@ -499,10 +500,10 @@ export default async function setupIntegratedSocket(server) {
       }
     });
 
-    // Produce Media
-    socket.on("produce", async ({ sessionId, transportId, kind, rtpParameters }, callback) => {
+    // transport-produce
+    socket.on("transport-produce", async ({ sessionId, transportId, kind, rtpParameters }, callback) => {
       try {
-        console.log("produce for transport:", transportId, "kind:", kind);
+        console.log("transport-produce for transport:", transportId, "kind:", kind);
         const state = roomState.get(sessionId);
         if (!state) {
           return callback({ error: "Session not found" });
@@ -543,7 +544,7 @@ export default async function setupIntegratedSocket(server) {
           userId: socket.data.userId,
         });
       } catch (error) {
-        console.error("produce error:", error);
+        console.error("transport-produce error:", error);
         callback({ error: error.message });
       }
     });
@@ -581,6 +582,9 @@ export default async function setupIntegratedSocket(server) {
           },
         });
 
+        // Store consumer in state
+        state.consumers.set(consumer.id, consumer);
+
         consumer.on("transportclose", () => {
           console.log("Consumer transport closed:", consumer.id);
           try {
@@ -588,6 +592,7 @@ export default async function setupIntegratedSocket(server) {
           } catch (e) {
             // ignore
           }
+          state.consumers.delete(consumer.id);
         });
 
         callback({
@@ -613,19 +618,7 @@ export default async function setupIntegratedSocket(server) {
           return callback({ error: "Session not found" });
         }
 
-        // Find consumer by checking all transports (each transport is a mediasoup transport instance)
-        let consumer = null;
-        for (const [, transport] of state.transports) {
-          if (transport && transport.consumers) {
-            try {
-              consumer = transport.consumers.get(consumerId);
-              if (consumer) break;
-            } catch (e) {
-              // continue searching
-            }
-          }
-        }
-
+        const consumer = state.consumers.get(consumerId);
         if (!consumer) {
           return callback({ error: "Consumer not found" });
         }
@@ -932,12 +925,26 @@ export default async function setupIntegratedSocket(server) {
           return;
         }
 
+        // Cleanup Mediasoup consumers created by this socket
+        for (const [consumerId, consumer] of state.consumers) {
+          try {
+            if (consumer && consumer.appData && consumer.appData.socketId === socket.id) {
+              consumer.close();
+              state.consumers.delete(consumerId);
+              console.log(`Consumer ${consumerId} cleaned up for socket: ${socket.id}`);
+            }
+          } catch (e) {
+            console.warn("Consumer cleanup error:", e);
+          }
+        }
+
         // Cleanup Mediasoup transports created by this socket
         for (const [transportId, transport] of state.transports) {
           try {
             if (transport && transport.appData && transport.appData.socketId === socket.id) {
               transport.close();
               state.transports.delete(transportId);
+              console.log(`Transport ${transportId} cleaned up for socket: ${socket.id}`);
             }
           } catch (e) {
             console.warn("Transport cleanup error:", e);
@@ -950,6 +957,7 @@ export default async function setupIntegratedSocket(server) {
             if (producer && producer.appData && producer.appData.socketId === socket.id) {
               producer.close();
               state.producers.delete(producerId);
+              console.log(`Producer ${producerId} cleaned up for socket: ${socket.id}`);
             }
           } catch (e) {
             console.warn("Producer cleanup error:", e);
@@ -999,11 +1007,11 @@ export default async function setupIntegratedSocket(server) {
           if (state.router) {
             try {
               state.router.close();
+              console.log(`Mediasoup router closed for session: ${sid}`);
             } catch (e) {
               console.warn("Error closing router:", e);
             }
             state.router = null;
-            console.log(`Mediasoup router closed for session: ${sid}`);
           }
 
           const session = await liveSession.findOne({ sessionId: sid });
@@ -1019,6 +1027,23 @@ export default async function setupIntegratedSocket(server) {
         state.sockets.delete(socket.id);
         socket.leave(sid);
         console.log(`Socket ${socket.id} removed from room state for session: ${sid}`);
+
+        // Clean up empty room state if no participants left
+        if (state.sockets.size === 0) {
+          // Flush any pending whiteboard operations before cleaning up
+          if (state.pendingOps && state.pendingOps.length > 0) {
+            await flushCanvasOps(sid).catch(err => {
+              console.error(`Error flushing canvas ops during cleanup for session ${sid}:`, err);
+            });
+          }
+
+          if (state.flushTimer) {
+            clearTimeout(state.flushTimer);
+          }
+
+          roomState.delete(sid);
+          console.log(`Room state cleaned up for session: ${sid}`);
+        }
       } catch (e) {
         console.error("cleanupSocketFromRoom error:", e?.message || e);
       }
@@ -1033,32 +1058,10 @@ export default async function setupIntegratedSocket(server) {
       console.log(`Socket disconnected: ${socket.id}, reason: ${reason}`);
       cleanupSocketFromRoom();
     });
-
-    // =========================
-    // ===== RECORDING =====
-    // =========================
-    socket.on("save_recording", async ({ sessionId, recordingFiles }) => {
-      console.log(`Save recording request for session: ${sessionId}, files: ${Array.isArray(recordingFiles) ? recordingFiles.length : "unknown"}`);
-      try {
-        const session = await liveSession.findOne({ sessionId });
-        if (!session) {
-          console.log(`Session not found: ${sessionId}`);
-          return;
-        }
-        session.recordingUrl = [...(session.recordingUrl || []), ...(recordingFiles || [])];
-        await session.save();
-        socket.emit("recording_saved", { sessionId, recordingFiles });
-        console.log(`Recording saved for session: ${sessionId}`);
-      } catch (err) {
-        console.error("save_recording error:", err?.message || err);
-        socket.emit("error_message", "Recording save failed");
-      }
-    });
-  }); // end io.on connection
+  });
 
   return io;
-} // end setupIntegratedSocket
-
+}
 
 
 
@@ -2246,4 +2249,3 @@ export default async function setupIntegratedSocket(server) {
 //   }
 //   return io;
 // };
- 
