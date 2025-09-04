@@ -221,6 +221,70 @@ export default async function setupIntegratedSocket(server) {
       hasTURN: false, // Currently no TURN in development
     });
 
+    // =========================
+    // ===== NEW EVENT HANDLERS =====
+    // =========================
+    
+    // Get all producers in a session
+    socket.on("getProducers", async ({ sessionId }, callback) => {
+      try {
+        console.log("getProducers for session:", sessionId);
+        const state = roomState.get(sessionId);
+        if (!state) {
+          return callback([]);
+        }
+        const producerIds = Array.from(state.producers.keys());
+        callback(producerIds);
+      } catch (error) {
+        console.error("getProducers error:", error);
+        callback([]);
+      }
+    });
+    
+    // Get producer information
+    socket.on("getProducerInfo", async ({ sessionId, producerId }, callback) => {
+      try {
+        console.log("getProducerInfo for producer:", producerId);
+        const state = roomState.get(sessionId);
+        if (!state) {
+          return callback(null);
+        }
+        const producer = state.producers.get(producerId);
+        if (!producer) {
+          return callback(null);
+        }
+        callback({
+          id: producer.id,
+          kind: producer.kind,
+          userId: socket.data?.userId,
+          socketId: producer.appData?.socketId
+        });
+      } catch (error) {
+        console.error("getProducerInfo error:", error);
+        callback(null);
+      }
+    });
+    
+    // Consumer ready event
+    socket.on("consumer-ready", async ({ sessionId, consumerId }, callback) => {
+      try {
+        console.log("consumer-ready for consumer:", consumerId);
+        const state = roomState.get(sessionId);
+        if (!state) {
+          return callback({ error: "Session not found" });
+        }
+        const consumer = state.consumers.get(consumerId);
+        if (!consumer) {
+          return callback({ error: "Consumer not found" });
+        }
+        // Consumer is ready, no additional action needed
+        callback({ success: true });
+      } catch (error) {
+        console.error("consumer-ready error:", error);
+        callback({ error: error.message });
+      }
+    });
+
     socket.on("join_room", async ({ token, sessionId, roomCode }) => {
       console.log(`Join room request from socket: ${socket.id}, sessionId: ${sessionId}, roomCode: ${roomCode}`);
       try {
@@ -901,6 +965,7 @@ export default async function setupIntegratedSocket(server) {
       });
       console.log(`Whiteboard state sent to socket: ${socket.id}`);
     });
+
 
     // =========================
     // ===== LEAVE / DISCONNECT =====
