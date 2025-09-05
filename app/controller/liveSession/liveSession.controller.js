@@ -9,6 +9,9 @@ import { errorEn, successEn } from "../../responses/message.js";
 import { getIO } from "../../services/socket.integrated.js"; 
 import { ROLE_MAP } from "../../constant/role.js";
 
+/**
+ * Start Live Session
+ */
 // 🔹 Helper: secure random alphanumeric roomCode
 const generateRoomCode = () => {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -28,13 +31,16 @@ export const startLiveSession = async (req, res) => {
       return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
     }
 
+    // generate unique room code
     const roomCode = generateRoomCode();
 
+    // check if already an active session exists with same code
     const existingSession = await liveSessionModel.findOne({ roomCode, status: "ACTIVE" });
     if (existingSession) {
       return sendErrorResponse(res, errorEn.LIVE_SESSION_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
     }
 
+    // create session
     const sessionId = uuidv4();
     const liveSession = await liveSessionModel.create({
       streamerId: mentorId,
@@ -55,6 +61,7 @@ export const startLiveSession = async (req, res) => {
       totalActiveDuration: 0
     });
 
+    // create whiteboard
     const whiteboard = await whiteBoardModel.create({
       whiteboardId: uuidv4(),
       title,
@@ -73,9 +80,11 @@ export const startLiveSession = async (req, res) => {
       ]
     });
 
+    // link whiteboard to session
     liveSession.whiteboardId = whiteboard._id;
     await liveSession.save();
 
+    // notify all connected clients
     io.emit("session_started", {
       sessionId,
       mentorId,
@@ -88,7 +97,7 @@ export const startLiveSession = async (req, res) => {
     return sendSuccessResponse(res, liveSession, successEn.LIVE_SESSION_CREATED, HttpStatus.CREATED);
 
   } catch (error) {
-    console.log("Start LiveSession Error:", error.message);
+    console.error("Start LiveSession Error:", error.message);
     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };

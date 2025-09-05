@@ -26,7 +26,7 @@ export const joinParticipant = async (req, res) => {
     const participantId = req.tokenData._id;
 
     // Ensure session exists
-    let session = await liveSession.findById(sessionId);
+    let session = await liveSessionModel.findById(sessionId);
     if (!session) {
       return sendErrorResponse(res, "Session not found", 404);
     }
@@ -38,7 +38,7 @@ export const joinParticipant = async (req, res) => {
     }
 
     // Check duplicate
-    const existingParticipant = await liveSessionParticipant.findOne({
+    const existingParticipant = await liveSessionParticipantModel.findOne({
       sessionId,
       participantId,
       deviceSessionId,
@@ -48,7 +48,7 @@ export const joinParticipant = async (req, res) => {
     }
 
     // Save participant
-    const participant = new liveSessionParticipant({
+    const participant = new liveSessionParticipantModel({
       sessionId,
       participantId,
       deviceSessionId,
@@ -129,7 +129,7 @@ export const leaveParticipant = async (req, res) => {
     const { sessionId, deviceSessionId } = req.body;
     const participantId = req.tokenData._id;
 
-    const participant = await liveSessionParticipant.findOne({
+    const participant = await liveSessionParticipantModel.findOne({
       sessionId,
       participantId,
       deviceSessionId,
@@ -148,7 +148,7 @@ export const leaveParticipant = async (req, res) => {
     }
 
     // Remove participant
-    await liveSession.findByIdAndUpdate(sessionId, {
+    await liveSessionModel.findByIdAndUpdate(sessionId, {
       $pull: { participants: participant._id },
     });
     await participant.remove();
@@ -169,7 +169,7 @@ export const kickParticipant = async (req, res) => {
   try {
     const { sessionId, participantId } = req.body;
 
-    const participant = await liveSessionParticipant.findOne({
+    const participant = await liveSessionParticipantModel.findOne({
       sessionId,
       participantId,
     });
@@ -187,7 +187,7 @@ export const kickParticipant = async (req, res) => {
       delete global.transports[sessionId][participant.deviceSessionId];
     }
 
-    await liveSession.findByIdAndUpdate(sessionId, {
+    await liveSessionModel.findByIdAndUpdate(sessionId, {
       $pull: { participants: participant._id },
     });
     await participant.remove();
@@ -206,7 +206,7 @@ export const kickParticipant = async (req, res) => {
 export const toggleBanParticipant = async (req, res) => {
   try {
     const { sessionId, participantId } = req.body;
-    const session = await liveSession.findById(sessionId);
+    const session = await liveSessionModel.findById(sessionId);
 
     if (!session) {
       return sendErrorResponse(res, "Session not found", 404);
