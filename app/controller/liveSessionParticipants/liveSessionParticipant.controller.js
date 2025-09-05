@@ -25,19 +25,19 @@ export const joinParticipant = async (req, res) => {
     } = req.body;
     const participantId = req.tokenData._id;
 
-    // Ensure session exists
-    let session = await liveSessionModel.findById(sessionId);
+    // ✅ Ensure session exists using sessionId field instead of _id
+    let session = await liveSessionModel.findOne({ sessionId: sessionId });
     if (!session) {
       return sendErrorResponse(res, "Session not found", 404);
     }
 
-    // Check ban
+    // ✅ Check ban
     const isBanned = session.bannedParticipants.includes(participantId);
     if (isBanned) {
       return sendErrorResponse(res, "You are banned from this session", 403);
     }
 
-    // Check duplicate
+    // ✅ Check duplicate
     const existingParticipant = await liveSessionParticipantModel.findOne({
       sessionId,
       participantId,
@@ -47,7 +47,7 @@ export const joinParticipant = async (req, res) => {
       return sendErrorResponse(res, "Already joined", 400);
     }
 
-    // Save participant
+    // ✅ Save participant
     const participant = new liveSessionParticipantModel({
       sessionId,
       participantId,
@@ -59,7 +59,7 @@ export const joinParticipant = async (req, res) => {
     });
     await participant.save();
 
-    // Add to session
+    // ✅ Add to session
     session.participants.push(participant._id);
     await session.save();
 
@@ -101,7 +101,7 @@ export const joinParticipant = async (req, res) => {
     if (!global.transports[sessionId]) global.transports[sessionId] = {};
     global.transports[sessionId][deviceSessionId] = transport;
 
-    // Emit to socket
+    // ✅ Emit to socket
     getIO().to(socketId).emit("webrtc:createTransport", {
       id: transport.id,
       iceParameters: transport.iceParameters,
