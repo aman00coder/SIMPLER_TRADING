@@ -74,7 +74,14 @@ const liveSessionSchema = new mongoose.Schema({
     // 🔹 Moderation
     isRecordingEnabled: { type: Boolean, default: false },
     isChatEnabled: { type: Boolean, default: true },
-    isWhiteboardEnabled: { type: Boolean, default: true }
+    isWhiteboardEnabled: { type: Boolean, default: true },
+
+    // 🔹 🚀 Add this field for ban management
+    bannedParticipants: {
+        type: [mongoose.Schema.Types.ObjectId],
+        ref: "User",
+        default: []
+    }
 }, { timestamps: true });
 
 // ✅ OverwriteModelError fix

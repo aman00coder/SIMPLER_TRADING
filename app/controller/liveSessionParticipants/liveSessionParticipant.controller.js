@@ -23,90 +23,48 @@ export const joinParticipant = async (req, res) => {
       geoLocation,
       socketId,
     } = req.body;
-    const participantId = req.tokenData._id;
 
-    // ✅ Ensure session exists using sessionId field instead of _id
-    let session = await liveSessionModel.findOne({ sessionId: sessionId });
+    const userId = req.tokenData.userId;
+
+    let session = await liveSessionModel.findOne({ sessionId });
     if (!session) {
       return sendErrorResponse(res, "Session not found", 404);
     }
 
-    // ✅ Check ban
-    const isBanned = session.bannedParticipants.includes(participantId);
+    const isBanned = session.bannedParticipants?.includes(userId);
     if (isBanned) {
       return sendErrorResponse(res, "You are banned from this session", 403);
     }
 
-    // ✅ Check duplicate
     const existingParticipant = await liveSessionParticipantModel.findOne({
       sessionId,
-      participantId,
+      userId,
       deviceSessionId,
     });
     if (existingParticipant) {
       return sendErrorResponse(res, "Already joined", 400);
     }
 
-    // ✅ Save participant
     const participant = new liveSessionParticipantModel({
       sessionId,
-      participantId,
+      userId,
       deviceSessionId,
       role,
+      socketId,
       networkStats,
       engagementStats,
       geoLocation,
     });
     await participant.save();
 
-    // ✅ Add to session
-    session.participants.push(participant._id);
+    session.participants.push(userId);
     await session.save();
 
-    // ✅ Setup mediasoup router + transport
-    if (!global.mediasoupRouters) global.mediasoupRouters = {};
-    if (!global.transports) global.transports = {};
-
-    if (!global.mediasoupRouters[sessionId]) {
-      const mediaCodecs = [
-        {
-          kind: "audio",
-          mimeType: "audio/opus",
-          clockRate: 48000,
-          channels: 2,
-        },
-        {
-          kind: "video",
-          mimeType: "video/VP8",
-          clockRate: 90000,
-        },
-      ];
-      global.mediasoupRouters[sessionId] =
-        await global.mediasoupWorker.createRouter({ mediaCodecs });
-    }
-
-    const router = global.mediasoupRouters[sessionId];
-    const transport = await router.createWebRtcTransport({
-      listenIps: [
-        {
-          ip: process.env.MEDIA_SOUP_LISTEN_IP || "0.0.0.0",
-          announcedIp: process.env.MEDIA_SOUP_ANNOUNCED_IP || "127.0.0.1",
-        },
-      ],
-      enableUdp: true,
-      enableTcp: true,
-      preferUdp: true,
-    });
-
-    if (!global.transports[sessionId]) global.transports[sessionId] = {};
-    global.transports[sessionId][deviceSessionId] = transport;
-
-    // ✅ Emit to socket
-    getIO().to(socketId).emit("webrtc:createTransport", {
-      id: transport.id,
-      iceParameters: transport.iceParameters,
-      iceCandidates: transport.iceCandidates,
-      dtlsParameters: transport.dtlsParameters,
+    // ✅ Inform socket (client will continue WebRTC flow using socket events)
+    getIO().to(socketId).emit("participant_joined", {
+      userId,
+      sessionId,
+      role,
     });
 
     return sendSuccessResponse(
@@ -119,6 +77,8 @@ export const joinParticipant = async (req, res) => {
     return sendErrorResponse(res, error.message, 500);
   }
 };
+
+
 
 
 // ===========================
