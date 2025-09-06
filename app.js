@@ -12,7 +12,8 @@ import session from "express-session";
 import morgan from "morgan";
 
 import http from "http";
-import setupIntegratedSocket from "./app/services/socket.integrated.js";
+// ✅ FIXED: Changed from default import to named import
+import { setupIntegratedSocket } from "./app/services/socket.integrated.js";
 
 import mediasoup from "mediasoup";
 
@@ -85,7 +86,10 @@ const PORT = process.env.PORT || 9090;
 // 🔹 Start server after Mediasoup worker is ready
 createMediasoupWorker()
   .then((worker) => {
-    const io = setupIntegratedSocket(httpServer, { worker, routers });
+    // ✅ FIXED: Updated to match the new function signature
+    // The setupIntegratedSocket function now only takes the server parameter
+    // and handles mediasoup worker creation internally
+    const io = setupIntegratedSocket(httpServer);
     app.set("io", io);
 
     httpServer.listen(PORT, "0.0.0.0", () => {
