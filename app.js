@@ -12,18 +12,13 @@ import session from "express-session";
 import morgan from "morgan";
 
 import http from "http";
-// ✅ FIXED: Changed from default import to named import
 import { setupIntegratedSocket } from "./app/services/socket.integrated.js";
-
 import mediasoup from "mediasoup";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-
-// 🌟 Mediasoup globals
-let routers = new Map(); // sessionId -> router
 
 // 🔹 Create Mediasoup Worker
 const createMediasoupWorker = async () => {
@@ -34,7 +29,7 @@ const createMediasoupWorker = async () => {
   });
 
   worker.on("died", () => {
-    console.error("Mediasoup worker died, exiting in 2 seconds...");
+    console.error("❌ Mediasoup worker died, exiting in 2 seconds...");
     setTimeout(() => process.exit(1), 2000);
   });
 
@@ -80,22 +75,34 @@ app.get("/", (req, res) => {
 });
 
 const httpServer = http.createServer(app);
-
 const PORT = process.env.PORT || 9090;
 
 // 🔹 Start server after Mediasoup worker is ready
-createMediasoupWorker()
-  .then((worker) => {
-    // ✅ FIXED: Updated to match the new function signature
-    // The setupIntegratedSocket function now only takes the server parameter
-    // and handles mediasoup worker creation internally
-    const io = setupIntegratedSocket(httpServer);
+(async () => {
+  try {
+    const worker = await createMediasoupWorker();
+
+    // ✅ FIX: Pass worker into setupIntegratedSocket and await it
+    const io = await setupIntegratedSocket(httpServer, worker);
     app.set("io", io);
 
     httpServer.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀✨ Server is running on port ${PORT} 🌟`);
     });
-  })
-  .catch((err) => {
-    console.error("❌ Failed to create Mediasoup Worker:", err);
-  });
+
+    // ✅ Graceful shutdown
+    const shutdown = async () => {
+      console.log("Shutting down...");
+      try {
+        io.close();
+        await worker.close();
+      } catch (e) {}
+      process.exit(0);
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  } catch (err) {
+    console.error("❌ Failed to initialize server:", err);
+    process.exit(1);
+  }
+})();

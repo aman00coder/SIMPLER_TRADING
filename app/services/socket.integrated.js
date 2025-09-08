@@ -1059,46 +1059,43 @@ const getIO = () => {
   return io;
 };
 
-const safeEmit = (toSocketId, event, payload) => {
+const safeEmit = (toSocketId, event, payload, callback) => {
   try {
     const s = io.sockets.sockets.get(toSocketId);
     if (s) {
-      s.emit(event, payload);
-      console.log(`Emitted ${event} to socket: ${toSocketId}`);
+      s.emit(event, payload, callback);
+      console.log(`✅ Emitted ${event} to socket: ${toSocketId}`);
     } else {
-      console.log(`Socket not found: ${toSocketId}`);
+      console.log(`⚠️ Socket not found: ${toSocketId}`);
     }
   } catch (err) {
-    console.error("safeEmit error:", err);
+    console.error("❌ safeEmit error:", err);
   }
 };
+
 
 const getIceServersFromEnv = () => {
   const isProduction = process.env.NODE_ENV === "production";
   console.log(`Getting ICE servers for ${isProduction ? "production" : "development"} environment`);
 
   const servers = [];
+
+  // STUN
   const stunUrls = (process.env.STUN_URLS || "stun:stun.l.google.com:19302,stun:global.stun.twilio.com:3478")
     .split(",")
     .map(s => s.trim())
     .filter(Boolean);
 
-  stunUrls.forEach(url => {
-    if (url) servers.push({ urls: url });
-  });
+  stunUrls.forEach(url => servers.push({ urls: url }));
 
+  // TURN (only in production)
   if (isProduction) {
     const turnUrls = (process.env.TURN_URLS || "").split(",").map(s => s.trim()).filter(Boolean);
-    const turnUsername = process.env.TURN_USERNAME;
-    const turnPassword = process.env.TURN_PASSWORD;
+    const { TURN_USERNAME: username, TURN_PASSWORD: credential } = process.env;
 
     turnUrls.forEach(url => {
-      if (url && turnUsername && turnPassword) {
-        servers.push({
-          urls: url,
-          username: turnUsername,
-          credential: turnPassword
-        });
+      if (url && username && credential) {
+        servers.push({ urls: url, username, credential });
       }
     });
   }
@@ -1124,10 +1121,10 @@ const createMediasoupWorker = async () => {
       rtcMaxPort: maxPort,
     });
 
-    console.log(`Mediasoup Worker Created (Ports: ${minPort}-${maxPort}) for ${process.env.NODE_ENV} environment`);
+    console.log(`🎯 Mediasoup Worker Created (Ports: ${minPort}-${maxPort}) for ${process.env.NODE_ENV} environment`);
 
     mediasoupWorker.on("died", () => {
-      console.error("Mediasoup worker died, restarting in 2 seconds...");
+      console.error("❌ Mediasoup worker died, restarting in 2 seconds...");
       setTimeout(() => createMediasoupWorker().catch(console.error), 2000);
     });
 
@@ -1137,6 +1134,7 @@ const createMediasoupWorker = async () => {
     throw error;
   }
 };
+
 
 const flushCanvasOps = async (sessionId) => {
   console.log(`Flushing canvas operations for session: ${sessionId}`);
