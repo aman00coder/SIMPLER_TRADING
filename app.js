@@ -70,9 +70,17 @@ app.use(
 
 app.get("/", (req, res) => {
   res.json({
+    status: "success",
     message: "🚀✨ Server is running successfully 🌟",
+    app: "SIMPLER_TRADING",
+    version: "1.0.0",
+    environment: process.env.NODE_ENV || "development",
+    port: process.env.PORT || 9090,
+    serverTime: new Date().toISOString(),
+    note: "API is up and running. Use the documented endpoints to interact."
   });
 });
+
 
 const httpServer = http.createServer(app);
 const PORT = process.env.PORT || 9090;
