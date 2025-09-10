@@ -75,8 +75,8 @@ app.get("/", (req, res) => {
     message: "🚀✨ Server is running successfully 🌟",
     app: "SIMPLER_TRADING",
     version: "1.0.0",
-    environment: process.env.NODE_ENV || "development",
-    port: process.env.PORT || 9090,
+    environment: process.env.NODE_ENV,
+    port: process.env.PORT,
     serverTime: new Date().toISOString(),
     note: "API is up and running. Use the documented endpoints to interact."
   });
