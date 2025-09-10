@@ -72,7 +72,7 @@ app.use(
 app.get("/", (req, res) => {
   res.json({
     status: "success",
-    message: "🚀✨ Server is running successfully 🌟",
+    message: "🚀✨ Server is running successfully fdsfsdfsdf🌟",
     app: "SIMPLER_TRADING",
     version: "1.0.0",
     environment: process.env.NODE_ENV,
