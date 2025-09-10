@@ -204,7 +204,6 @@ const pauseAllProducers = async (sessionId, socketId) => {
       try {
         await producer.pause();
         console.log(`Producer ${producerId} paused`);
-        // Notify the client that producer was paused
         safeEmit(socketId, "producer-paused", { producerId });
       } catch (error) {
         console.error("Error pausing producer:", error);
@@ -224,7 +223,6 @@ const resumeAllProducers = async (sessionId, socketId) => {
       try {
         await producer.resume();
         console.log(`Producer ${producerId} resumed`);
-        // Notify the client that producer was resumed
         safeEmit(socketId, "producer-resumed", { producerId });
       } catch (error) {
         console.error("Error resuming producer:", error);
@@ -278,8 +276,6 @@ const producerCloseHandler = async (socket, sessionId, producerId) => {
       producer.close();
       state.producers.delete(producerId);
       console.log(`Producer ${producerId} closed and removed`);
-      
-      // Notify the client that the producer was closed
       socket.emit("producer-closed", { producerId });
     }
   } catch (error) {
@@ -338,11 +334,9 @@ const cleanupSocketFromRoom = async (socket) => {
       try {
         if (producer?.appData?.socketId === socket.id) {
           if (meta.role === ROLE_MAP.STREAMER) {
-            // Pause streamer's producers instead of closing them
             await producer.pause();
             console.log(`Producer ${producerId} paused during cleanup (streamer)`);
           } else {
-            // Close viewers' producers
             producer.close();
             state.producers.delete(producerId);
             console.log(`Producer ${producerId} closed and removed (viewer)`);
@@ -393,16 +387,13 @@ const cleanupSocketFromRoom = async (socket) => {
       io.to(sid).emit("user_left", { userId: meta.userId, socketId: socket.id });
       console.log(`Viewer ${socket.id} left room ${sid}`);
     } else {
-      // Streamer left - pause session
       console.log(`Streamer ${socket.id} left room ${sid}`);
       
-      // IMPORTANT: Clear the streamerSocketId when streamer disconnects
       if (state.streamerSocketId === socket.id) {
         state.streamerSocketId = null;
         console.log(`Cleared streamerSocketId for session: ${sid}`);
       }
 
-      // Don't close the router when streamer leaves, just pause producers
       const session = await liveSession.findOne({ sessionId: sid });
       if (session) {
         session.status = "PAUSED";
@@ -427,7 +418,6 @@ const cleanupSocketFromRoom = async (socket) => {
 
       if (state.flushTimer) clearTimeout(state.flushTimer);
       
-      // Close router only when room is completely empty
       if (state.router) {
         try {
           state.router.close();
@@ -446,6 +436,59 @@ const cleanupSocketFromRoom = async (socket) => {
   }
 };
 
+const handleScreenShareStart = async (socket, sessionId, transportId, kind, rtpParameters, callback) => {
+  try {
+    console.log("Screen share start for transport:", transportId, "kind:", kind);
+    const state = roomState.get(sessionId);
+    if (!state) return callback({ error: "Session not found" });
+
+    const transport = state.transports.get(transportId);
+    if (!transport) return callback({ error: "Transport not found" });
+
+    const producer = await transport.produce({
+      kind,
+      rtpParameters,
+      appData: {
+        socketId: socket.id,
+        environment: process.env.NODE_ENV,
+        source: 'screen'  // This identifies it as screen share
+      },
+    });
+
+    state.producers.set(producer.id, producer);
+
+    producer.on("transportclose", () => {
+      console.log("Screen share producer transport closed:", producer.id);
+      try {
+        producer.close();
+      } catch (e) {
+        // ignore
+      }
+      state.producers.delete(producer.id);
+    });
+
+    callback({ id: producer.id });
+
+    // Emit a specific event for screen share
+    socket.to(sessionId).emit("screen-share-started", {
+      producerId: producer.id,
+      kind: producer.kind,
+      userId: socket.data.userId,
+      source: 'screen'
+    });
+    
+    // Also emit the regular new-producer event for compatibility
+    socket.to(sessionId).emit("new-producer", {
+      producerId: producer.id,
+      kind: producer.kind,
+      userId: socket.data.userId,
+      source: 'screen'
+    });
+  } catch (error) {
+    console.error("Screen share start error:", error);
+    callback({ error: error.message });
+  }
+};
 const joinRoomHandler = async (socket, data) => {
   const { token, sessionId, roomCode } = data;
   console.log(`Join room request from socket: ${socket.id}, sessionId: ${sessionId}, roomCode: ${roomCode}`);
@@ -484,7 +527,6 @@ const joinRoomHandler = async (socket, data) => {
       if (!allowed) return socket.emit("error_message", "You are not allowed to join this private session");
     }
 
-    // Use sessionId as key
     const sid = session.sessionId;
     if (!roomState.has(sid)) {
       roomState.set(sid, {
@@ -505,7 +547,6 @@ const joinRoomHandler = async (socket, data) => {
     
     const state = roomState.get(sid);
 
-    // Max participants check
     const maxParticipants = parseInt(process.env.MAX_PARTICIPANTS_PER_SESSION) || 100;
     const activeCount = await liveSessionParticipant.countDocuments({ 
       sessionId: session._id, 
@@ -516,26 +557,19 @@ const joinRoomHandler = async (socket, data) => {
       return socket.emit("error_message", "Max participants limit reached");
     }
 
-    // Check if banned
     let participant = await liveSessionParticipant.findOne({ sessionId: session._id, userId });
     if (participant && participant.isBanned) {
       return socket.emit("error_message", "You are banned from this session");
     }
 
-    // SIMPLE SOLUTION: Just update the streamer socket ID
     if (userRole === ROLE_MAP.STREAMER) {
-      // Always allow streamer to reconnect by updating the socket ID
       if (state.streamerSocketId && state.streamerSocketId !== socket.id) {
         console.log(`Streamer reconnecting from ${state.streamerSocketId} to ${socket.id}`);
-        
-        // Clean up the old socket from our state (if it exists)
         if (state.sockets.has(state.streamerSocketId)) {
           state.sockets.delete(state.streamerSocketId);
           state.viewers.delete(state.streamerSocketId);
         }
       }
-      
-      // Update the streamer socket ID to the new one
       state.streamerSocketId = socket.id;
       console.log(`Streamer socket ID updated to: ${socket.id}`);
     }
@@ -561,7 +595,6 @@ const joinRoomHandler = async (socket, data) => {
       await participant.save();
     }
 
-    // Create Mediasoup Router if streamer and not exists
     if (userRole === ROLE_MAP.STREAMER && !state.router) {
       console.log("Creating Mediasoup router for session:", sid);
       const mediaCodecs = [
@@ -585,13 +618,11 @@ const joinRoomHandler = async (socket, data) => {
       console.log("Mediasoup router created for session:", sid);
     }
 
-    // Join room
     state.sockets.set(socket.id, { userId, role: userRole });
     socket.data = { sessionId: sid, userId, role: userRole };
     socket.join(sid);
     console.log(`Socket ${socket.id} joined room ${sid}`);
 
-    // Send ICE servers to client upon joining
     const iceServers = getIceServersFromEnv();
     socket.emit("ice_servers", iceServers);
 
@@ -602,7 +633,8 @@ const joinRoomHandler = async (socket, data) => {
         roomCode: session.roomCode,
         hasMediasoup: !!state.router,
         environment: process.env.NODE_ENV,
-        iceServers: iceServers
+        iceServers: iceServers,
+        activeProducers: Array.from(state.producers.keys())
       });
       console.log(`Streamer ${socket.id} joined room ${sid}`);
     } else {
@@ -614,7 +646,8 @@ const joinRoomHandler = async (socket, data) => {
         whiteboardId: state.whiteboardId,
         hasMediasoup: !!state.router,
         environment: process.env.NODE_ENV,
-        iceServers: iceServers
+        iceServers: iceServers,
+        activeProducers: Array.from(state.producers.keys())
       });
       console.log(`Viewer ${socket.id} joined room ${sid}`);
       
@@ -687,7 +720,6 @@ const streamerControlHandler = async (socket, data) => {
     const session = await liveSession.findOne({ sessionId });
     if (!session) return;
 
-    // Handle media stream pausing/resuming
     if (status === "PAUSED") {
       await pauseAllProducers(sessionId, socket.id);
     } else if (status === "ACTIVE") {
@@ -777,9 +809,9 @@ const transportConnectHandler = async (socket, sessionId, transportId, dtlsParam
   }
 };
 
-const transportProduceHandler = async (socket, sessionId, transportId, kind, rtpParameters, callback) => {
+const transportProduceHandler = async (socket, sessionId, transportId, kind, rtpParameters, appData, callback) => {
   try {
-    console.log("transport-produce for transport:", transportId, "kind:", kind);
+    console.log("transport-produce for transport:", transportId, "kind:", kind, "source:", appData?.source);
     const state = roomState.get(sessionId);
     if (!state) return callback({ error: "Session not found" });
 
@@ -792,6 +824,7 @@ const transportProduceHandler = async (socket, sessionId, transportId, kind, rtp
       appData: {
         socketId: socket.id,
         environment: process.env.NODE_ENV,
+        source: appData?.source || 'camera'
       },
     });
 
@@ -809,11 +842,11 @@ const transportProduceHandler = async (socket, sessionId, transportId, kind, rtp
 
     callback({ id: producer.id });
 
-    // Broadcast new producer to other participants
     socket.to(sessionId).emit("new-producer", {
       producerId: producer.id,
       kind: producer.kind,
       userId: socket.data.userId,
+      source: appData?.source || 'camera'
     });
   } catch (error) {
     console.error("transport-produce error:", error);
@@ -915,7 +948,8 @@ const getProducerInfoHandler = async (socket, sessionId, producerId, callback) =
       id: producer.id,
       kind: producer.kind,
       userId: socket.data?.userId,
-      socketId: producer.appData?.socketId
+      socketId: producer.appData?.socketId,
+      source: producer.appData?.source || 'camera'
     });
   } catch (error) {
     console.error("getProducerInfo error:", error);
@@ -1084,7 +1118,7 @@ export const setupIntegratedSocket = async (server) => {
   io.on("connection", (socket) => {
     console.log("New client connected:", socket.id);
 
-    // Fix parameter structure for these events:
+    // Room and chat events
     socket.on("join_room", (data) => joinRoomHandler(socket, data));
     socket.on("chat_message", (data) => chatHandler(socket, data.sessionId, data.message));
     socket.on("streamer_control", (data) => streamerControlHandler(socket, data));
@@ -1100,7 +1134,7 @@ export const setupIntegratedSocket = async (server) => {
       producerCloseHandler(socket, data.sessionId, data.producerId)
     );
     
-    // Fix the parameter structure for these Mediasoup events:
+    // Mediasoup events
     socket.on("getRouterRtpCapabilities", (data, cb) => 
       getRouterRtpCapabilitiesHandler(socket, data.sessionId, cb));
     
@@ -1112,7 +1146,12 @@ export const setupIntegratedSocket = async (server) => {
     );
     
     socket.on("transport-produce", (data, cb) =>
-      transportProduceHandler(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, cb)
+      transportProduceHandler(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, data.appData, cb)
+    );
+    
+    // Screen share specific event
+    socket.on("transport-produce-screen", (data, cb) =>
+      handleScreenShareStart(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, cb)
     );
     
     socket.on("consume", (data, cb) =>
@@ -1123,7 +1162,6 @@ export const setupIntegratedSocket = async (server) => {
       consumerResumeHandler(socket, data.sessionId, data.consumerId, cb)
     );
     
-    // Add these missing handlers:
     socket.on("getProducers", (data, cb) =>
       getProducersHandler(socket, data.sessionId, cb)
     );
@@ -1178,16 +1216,19 @@ export const setupIntegratedSocket = async (server) => {
       iceCandidateHandler(socket, data.sessionId, data.targetSocketId, data.candidate)
     );
 
+    socket.on("transport-produce-screen", (data, cb) =>
+      handleScreenShareStart(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, cb)
+);
+
     socket.on("disconnect", () => cleanupSocketFromRoom(socket));
   });
 
-  console.log("✅ Socket.io setup complete with enhanced producer control");
+  console.log("✅ Socket.io setup complete with enhanced producer control and screen sharing support");
   return io;
 };
 
 // Export functions as named exports
 export { getIO };
-
 
 
 
