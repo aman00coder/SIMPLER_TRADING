@@ -34,17 +34,13 @@ const safeEmit = (toSocketId, event, payload) => {
 
 const getIceServersFromEnv = () => {
   const isProduction = process.env.NODE_ENV === "production";
-  console.log(`Getting ICE servers for ${isProduction ? "production" : "development"} environment`);
 
   const servers = [];
   const stunUrls = (process.env.STUN_URLS || "stun:stun.l.google.com:19302,stun:global.stun.twilio.com:3478")
     .split(",")
     .map(s => s.trim())
     .filter(Boolean);
-
-  stunUrls.forEach(url => {
-    if (url) servers.push({ urls: url });
-  });
+  stunUrls.forEach(url => { if (url) servers.push({ urls: url }); });
 
   if (isProduction) {
     const turnUrls = (process.env.TURN_URLS || "").split(",").map(s => s.trim()).filter(Boolean);
@@ -61,15 +57,14 @@ const getIceServersFromEnv = () => {
       }
     });
   }
-
   if (servers.length === 0) {
     servers.push({ urls: "stun:stun.l.google.com:19302" });
     servers.push({ urls: "stun:global.stun.twilio.com:3478" });
   }
 
-  console.log(`Found ${servers.length} ICE servers`);
   return servers;
 };
+
 
 const createMediasoupWorker = async () => {
   try {
