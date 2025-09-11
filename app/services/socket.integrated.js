@@ -1,1260 +1,16 @@
-import { Server } from "socket.io";
-import { createMediasoupWorker, getIceServersFromEnv, safeEmit } from "./socketUtils/index.js";
-import { roomState } from "./socketState/roomState.js";
-import * as handlers from "./socketHandlers/index.js";
-
-// ======= Global Variables =======
-let io;
-let mediasoupWorker;
-
-// ======= Utility Functions =======
-const getIO = () => {
-  if (!io) throw new Error("Socket.io not initialized. Call setupIntegratedSocket first.");
-  return io;
-};
-
-// ======= Setup Socket.io =======
-export const setupIntegratedSocket = async (server) => {
-  console.log("Setting up integrated socket");
-
-  try {
-    mediasoupWorker = await createMediasoupWorker();
-  } catch (error) {
-    console.error("Failed to initialize Mediasoup:", error);
-    throw error;
-  }
-
-  const corsOrigin = process.env.CORS_ORIGIN || "http://localhost:5174";
-  io = new Server(server, {
-    cors: {
-      origin: corsOrigin,
-      methods: ["GET", "POST"],
-      credentials: true,
-    },
-  });
-
-  console.log(`Socket.io configured with CORS origin: ${corsOrigin} for ${process.env.NODE_ENV} environment`);
-
-  io.on("connection", (socket) => {
-    console.log("New client connected:", socket.id);
-
-    // Room and chat events
-    socket.on("join_room", (data) => handlers.joinRoomHandler(socket, data, io, roomState, mediasoupWorker));
-    socket.on("chat_message", (data) => handlers.chatHandler(socket, data.sessionId, data.message, io, roomState));
-    socket.on("streamer_control", (data) => handlers.streamerControlHandler(socket, data, io, roomState));
-    
-    // Producer control events
-    socket.on("producer-pause", (data) => 
-      handlers.producerPauseHandler(socket, data.sessionId, data.producerId, roomState)
-    );
-    socket.on("producer-resume", (data) => 
-      handlers.producerResumeHandler(socket, data.sessionId, data.producerId, roomState)
-    );
-    socket.on("producer-close", (data) => 
-      handlers.producerCloseHandler(socket, data.sessionId, data.producerId, roomState)
-    );
-    
-    // Mediasoup events
-    socket.on("getRouterRtpCapabilities", (data, cb) => 
-      handlers.getRouterRtpCapabilitiesHandler(socket, data.sessionId, cb, roomState));
-    
-    socket.on("createWebRtcTransport", (data, cb) => 
-      handlers.createWebRtcTransportHandler(socket, data.sessionId, cb, roomState));
-    
-    socket.on("transport-connect", (data, cb) =>
-      handlers.transportConnectHandler(socket, data.sessionId, data.transportId, data.dtlsParameters, cb, roomState)
-    );
-    
-    socket.on("transport-produce", (data, cb) =>
-      handlers.transportProduceHandler(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, data.appData, cb, roomState)
-    );
-    
-    // Screen share specific event
-    socket.on("transport-produce-screen", (data, cb) =>
-      handlers.handleScreenShareStart(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, cb, roomState)
-    );
-    
-    socket.on("consume", (data, cb) =>
-      handlers.consumeHandler(socket, data.sessionId, data.transportId, data.producerId, data.rtpCapabilities, cb, roomState)
-    );
-    
-    socket.on("consumer-resume", (data, cb) =>
-      handlers.consumerResumeHandler(socket, data.sessionId, data.consumerId, cb, roomState)
-    );
-    
-    socket.on("getProducers", (data, cb) =>
-      handlers.getProducersHandler(socket, data.sessionId, cb, roomState)
-    );
-    
-    socket.on("getProducerInfo", (data, cb) =>
-      handlers.getProducerInfoHandler(socket, data.sessionId, data.producerId, cb, roomState)
-    );
-    
-    socket.on("consumer-ready", (data, cb) =>
-      handlers.consumerReadyHandler(socket, data.sessionId, data.consumerId, cb, roomState)
-    );
-
-    // Whiteboard events
-    socket.on("whiteboard_draw", (data) => 
-      handlers.whiteboardEventHandler(socket, data.sessionId, "draw", data.drawData, data.patch, io, roomState)
-    );
-    
-    socket.on("whiteboard_erase", (data) => 
-      handlers.whiteboardEventHandler(socket, data.sessionId, "erase", data.eraseData, data.patch, io, roomState)
-    );
-    
-    socket.on("whiteboard_undo", (data) => 
-      handlers.whiteboardUndoHandler(socket, data.sessionId, io, roomState)
-    );
-    
-    socket.on("whiteboard_redo", (data) => 
-      handlers.whiteboardRedoHandler(socket, data.sessionId, io, roomState)
-    );
-    
-    socket.on("whiteboard_save", (data) => 
-      handlers.whiteboardSaveCanvasHandler(socket, data.sessionId, roomState)
-    );
-    
-    socket.on("whiteboard_cursor", (data) => 
-      handlers.cursorUpdateHandler(socket, data.sessionId, data.position, io, roomState)
-    );
-    
-    socket.on("whiteboard_state_request", (data) => 
-      handlers.whiteboardStateRequestHandler(socket, data.sessionId, roomState)
-    );
-
-    // WebRTC events
-    socket.on("offer", (data) => 
-      handlers.offerHandler(socket, data.sessionId, data.targetSocketId, data.sdp, io, roomState)
-    );
-    
-    socket.on("answer", (data) => 
-      handlers.answerHandler(socket, data.sessionId, data.sdp, io, roomState)
-    );
-    
-    socket.on("ice-candidate", (data) => 
-      handlers.iceCandidateHandler(socket, data.sessionId, data.targetSocketId, data.candidate, io, roomState)
-    );
-
-    socket.on("transport-produce-screen", (data, cb) =>
-      handlers.handleScreenShareStart(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, cb, roomState)
-    );
-
-    socket.on("disconnect", () => handlers.cleanupSocketFromRoom(socket, io, roomState));
-  });
-
-  console.log("✅ Socket.io setup complete with enhanced producer control and screen sharing support");
-  return io;
-};
-
-// Export functions as named exports
-export { getIO };
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // import { Server } from "socket.io";
-// import jwt from "jsonwebtoken";
-// import mediasoup from "mediasoup";
-// import liveSession from "../model/liveSessions/liveeSession.model.js";
-// import liveSessionParticipant from "../model/liveSessionParticipant/liveSessionParticipant.model.js";
-// import whiteboardModel from "../model/whiteBoards/whiteBoard.model.js";
-// import { ROLE_MAP } from "../constant/role.js";
-// import authenticationModel from "../../app/model/Authentication/authentication.model.js";
+// import { createMediasoupWorker, getIceServersFromEnv, safeEmit } from "./socketUtils/index.js";
+// import { roomState } from "./socketState/roomState.js";
+// import * as handlers from "./socketHandlers/index.js";
 
 // // ======= Global Variables =======
 // let io;
 // let mediasoupWorker;
-// const roomState = new Map();
 
 // // ======= Utility Functions =======
 // const getIO = () => {
 //   if (!io) throw new Error("Socket.io not initialized. Call setupIntegratedSocket first.");
 //   return io;
-// };
-
-// const safeEmit = (toSocketId, event, payload) => {
-//   try {
-//     const s = io.sockets.sockets.get(toSocketId);
-//     if (s) {
-//       s.emit(event, payload);
-//       console.log(`Emitted ${event} to socket: ${toSocketId}`);
-//     } else {
-//       console.log(`Socket not found: ${toSocketId}`);
-//     }
-//   } catch (err) {
-//     console.error("safeEmit error:", err);
-//   }
-// };
-
-// const getIceServersFromEnv = () => {
-//   const isProduction = process.env.NODE_ENV === "production";
-
-//   const servers = [];
-//   const stunUrls = (process.env.STUN_URLS || "stun:stun.l.google.com:19302,stun:global.stun.twilio.com:3478")
-//     .split(",")
-//     .map(s => s.trim())
-//     .filter(Boolean);
-//   stunUrls.forEach(url => { if (url) servers.push({ urls: url }); });
-
-//   if (isProduction) {
-//     const turnUrls = (process.env.TURN_URLS || "").split(",").map(s => s.trim()).filter(Boolean);
-//     const turnUsername = process.env.TURN_USERNAME;
-//     const turnPassword = process.env.TURN_PASSWORD;
-
-//     turnUrls.forEach(url => {
-//       if (url && turnUsername && turnPassword) {
-//         servers.push({
-//           urls: url,
-//           username: turnUsername,
-//           credential: turnPassword
-//         });
-//       }
-//     });
-//   }
-//   if (servers.length === 0) {
-//     servers.push({ urls: "stun:stun.l.google.com:19302" });
-//     servers.push({ urls: "stun:global.stun.twilio.com:3478" });
-//   }
-
-//   return servers;
-// };
-
-
-// const createMediasoupWorker = async () => {
-//   try {
-//     const minPort = parseInt(process.env.MEDIASOUP_MIN_PORT) || 40000;
-//     const maxPort = parseInt(process.env.MEDIASOUP_MAX_PORT) || 49999;
-//     const logLevel = process.env.MEDIASOUP_LOG_LEVEL || "warn";
-
-//     mediasoupWorker = await mediasoup.createWorker({
-//       logLevel,
-//       rtcMinPort: minPort,
-//       rtcMaxPort: maxPort,
-//     });
-
-//     console.log(`Mediasoup Worker Created (Ports: ${minPort}-${maxPort}) for ${process.env.NODE_ENV} environment`);
-
-//     mediasoupWorker.on("died", () => {
-//       console.error("Mediasoup worker died, restarting in 2 seconds...");
-//       setTimeout(() => createMediasoupWorker().catch(console.error), 2000);
-//     });
-
-//     return mediasoupWorker;
-//   } catch (error) {
-//     console.error("Failed to create Mediasoup worker:", error);
-//     throw error;
-//   }
-// };
-
-// const flushCanvasOps = async (sessionId) => {
-//   console.log(`Flushing canvas operations for session: ${sessionId}`);
-//   const state = roomState.get(sessionId);
-//   if (!state || !state.whiteboardId) {
-//     console.log(`No state or whiteboardId found for session: ${sessionId}`);
-//     return;
-//   }
-  
-//   const ops = state.pendingOps || [];
-//   if (!ops.length) {
-//     console.log(`No pending operations for session: ${sessionId}`);
-//     return;
-//   }
-  
-//   console.log(`Flushing ${ops.length} operations for session: ${sessionId}`);
-//   state.pendingOps = [];
-  
-//   if (state.flushTimer) {
-//     clearTimeout(state.flushTimer);
-//     state.flushTimer = null;
-//   }
-
-//   const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
-//   if (!wb) {
-//     console.log(`Whiteboard not found with ID: ${state.whiteboardId}`);
-//     return;
-//   }
-
-//   for (const op of ops) {
-//     if (op.type === "draw") wb.totalDrawActions = (wb.totalDrawActions || 0) + 1;
-//     if (op.type === "erase") wb.totalErases = (wb.totalErases || 0) + 1;
-
-//     wb.undoStack = [...(wb.undoStack || []), op].slice(-500);
-//     if (op.type === "draw" || op.type === "erase") wb.redoStack = [];
-//     if (op.patch) wb.canvasData = { ...(wb.canvasData || {}), ...op.patch };
-//   }
-
-//   wb.lastActivity = new Date();
-//   await wb.save();
-//   console.log(`Canvas operations flushed for session: ${sessionId}`);
-// };
-
-// const scheduleFlush = (sessionId, op) => {
-//   console.log(`Scheduling flush for session: ${sessionId}, operation type: ${op?.type}`);
-//   const state = roomState.get(sessionId);
-//   if (!state) {
-//     console.log(`No state found for session: ${sessionId}`);
-//     return;
-//   }
-  
-//   if (!state.pendingOps) state.pendingOps = [];
-//   state.pendingOps.push(op);
-  
-//   if (state.flushTimer) {
-//     console.log(`Flush already scheduled for session: ${sessionId}`);
-//     return;
-//   }
-  
-//   state.flushTimer = setTimeout(() => {
-//     flushCanvasOps(sessionId).catch(err => {
-//       console.error(`Error flushing canvas operations for session ${sessionId}:`, err);
-//     });
-//   }, 2000);
-  
-//   console.log(`Flush scheduled for session: ${sessionId}`);
-// };
-
-// export const initWhiteboardRTC = (sessionId, whiteboardId, createdBy) => {
-//   console.log(`Initializing whiteboard RTC for session: ${sessionId}, whiteboard: ${whiteboardId}, createdBy: ${createdBy}`);
-  
-//   if (!roomState.has(sessionId)) {
-//     roomState.set(sessionId, {
-//       whiteboardId,
-//       createdBy,
-//       streamerSocketId: null,
-//       viewers: new Set(),
-//       sockets: new Map(),
-//       pendingOps: [],
-//       flushTimer: null,
-//       router: null,
-//       transports: new Map(),
-//       producers: new Map(),
-//       consumers: new Map(),
-//     });
-//     console.log(`New room state created for session: ${sessionId}`);
-//   } else {
-//     const s = roomState.get(sessionId);
-//     s.whiteboardId = s.whiteboardId || whiteboardId;
-//     s.createdBy = s.createdBy || createdBy;
-//     console.log(`Existing room state updated for session: ${sessionId}`);
-//   }
-  
-//   return roomState.get(sessionId);
-// };
-
-// // ======= Producer Control Functions =======
-// const pauseAllProducers = async (sessionId, socketId) => {
-//   const state = roomState.get(sessionId);
-//   if (!state) return;
-
-//   console.log(`Pausing all producers for socket: ${socketId} in session: ${sessionId}`);
-  
-//   for (const [producerId, producer] of state.producers) {
-//     if (producer.appData?.socketId === socketId) {
-//       try {
-//         await producer.pause();
-//         console.log(`Producer ${producerId} paused`);
-//         safeEmit(socketId, "producer-paused", { producerId });
-//       } catch (error) {
-//         console.error("Error pausing producer:", error);
-//       }
-//     }
-//   }
-// };
-
-// const resumeAllProducers = async (sessionId, socketId) => {
-//   const state = roomState.get(sessionId);
-//   if (!state) return;
-
-//   console.log(`Resuming all producers for socket: ${socketId} in session: ${sessionId}`);
-  
-//   for (const [producerId, producer] of state.producers) {
-//     if (producer.appData?.socketId === socketId) {
-//       try {
-//         await producer.resume();
-//         console.log(`Producer ${producerId} resumed`);
-//         safeEmit(socketId, "producer-resumed", { producerId });
-//       } catch (error) {
-//         console.error("Error resuming producer:", error);
-//       }
-//     }
-//   }
-// };
-
-// const producerPauseHandler = async (socket, sessionId, producerId) => {
-//   try {
-//     console.log("producer-pause for producer:", producerId);
-//     const state = roomState.get(sessionId);
-//     if (!state) return;
-
-//     const producer = state.producers.get(producerId);
-//     if (producer && producer.appData?.socketId === socket.id) {
-//       await producer.pause();
-//       socket.emit("producer-paused", { producerId });
-//       console.log(`Producer ${producerId} paused`);
-//     }
-//   } catch (error) {
-//     console.error("producer-pause error:", error);
-//   }
-// };
-
-// const producerResumeHandler = async (socket, sessionId, producerId) => {
-//   try {
-//     console.log("producer-resume for producer:", producerId);
-//     const state = roomState.get(sessionId);
-//     if (!state) return;
-
-//     const producer = state.producers.get(producerId);
-//     if (producer && producer.appData?.socketId === socket.id) {
-//       await producer.resume();
-//       socket.emit("producer-resumed", { producerId });
-//       console.log(`Producer ${producerId} resumed`);
-//     }
-//   } catch (error) {
-//     console.error("producer-resume error:", error);
-//   }
-// };
-
-// const producerCloseHandler = async (socket, sessionId, producerId) => {
-//   try {
-//     console.log("producer-close for producer:", producerId);
-//     const state = roomState.get(sessionId);
-//     if (!state) return;
-
-//     const producer = state.producers.get(producerId);
-//     if (producer) {
-//       producer.close();
-//       state.producers.delete(producerId);
-//       console.log(`Producer ${producerId} closed and removed`);
-//       socket.emit("producer-closed", { producerId });
-//     }
-//   } catch (error) {
-//     console.error("producer-close error:", error);
-//   }
-// };
-
-// const cleanupSocketFromRoom = async (socket) => {
-//   console.log(`Cleanup requested for socket: ${socket.id}`);
-//   try {
-//     const sid = socket.data?.sessionId;
-//     if (!sid) {
-//       console.log(`No session ID found for socket: ${socket.id}`);
-//       return;
-//     }
-    
-//     const state = roomState.get(sid);
-//     if (!state) {
-//       console.log(`No state found for session: ${sid}`);
-//       return;
-//     }
-
-//     const meta = state.sockets.get(socket.id);
-//     if (!meta) {
-//       console.log(`No metadata found for socket: ${socket.id}`);
-//       return;
-//     }
-
-//     // Cleanup Mediasoup resources
-//     for (const [consumerId, consumer] of state.consumers) {
-//       try {
-//         if (consumer?.appData?.socketId === socket.id) {
-//           consumer.close();
-//           state.consumers.delete(consumerId);
-//           console.log(`Consumer ${consumerId} cleaned up for socket: ${socket.id}`);
-//         }
-//       } catch (e) {
-//         console.warn("Consumer cleanup error:", e);
-//       }
-//     }
-
-//     for (const [transportId, transport] of state.transports) {
-//       try {
-//         if (transport?.appData?.socketId === socket.id) {
-//           transport.close();
-//           state.transports.delete(transportId);
-//           console.log(`Transport ${transportId} cleaned up for socket: ${socket.id}`);
-//         }
-//       } catch (e) {
-//         console.warn("Transport cleanup error:", e);
-//       }
-//     }
-
-//     // Handle producers based on role
-//     for (const [producerId, producer] of state.producers) {
-//       try {
-//         if (producer?.appData?.socketId === socket.id) {
-//           if (meta.role === ROLE_MAP.STREAMER) {
-//             await producer.pause();
-//             console.log(`Producer ${producerId} paused during cleanup (streamer)`);
-//           } else {
-//             producer.close();
-//             state.producers.delete(producerId);
-//             console.log(`Producer ${producerId} closed and removed (viewer)`);
-//           }
-//         }
-//       } catch (e) {
-//         console.warn("Producer cleanup error:", e);
-//       }
-//     }
-
-//     // Whiteboard soft leave
-//     if (state.whiteboardId) {
-//       console.log(`Processing whiteboard leave for user: ${meta.userId}, whiteboard: ${state.whiteboardId}`);
-//       const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
-//       if (wb) {
-//         const participant = wb.participants.find(p => p.user.toString() === meta.userId);
-//         if (participant) {
-//           participant.status = "LEFT";
-//           participant.leftAt = new Date();
-//         }
-//         await wb.save();
-//         console.log(`User ${meta.userId} left whiteboard ${state.whiteboardId}`);
-//       }
-//     }
-
-//     // Update participant record
-//     if (meta.role !== ROLE_MAP.STREAMER) {
-//       try {
-//         const participant = await liveSessionParticipant.findOne({ 
-//           $or: [
-//             { sessionId: sid, userId: meta.userId },
-//             { socketId: socket.id }
-//           ]
-//         });
-        
-//         if (participant) {
-//           participant.status = "LEFT";
-//           participant.leftAt = new Date();
-//           participant.isActiveDevice = false;
-//           await participant.save();
-//           console.log(`Participant ${meta.userId} marked as LEFT`);
-//         }
-//       } catch (e) {
-//         console.error("cleanup update error:", e?.message || e);
-//       }
-
-//       state.viewers.delete(socket.id);
-//       io.to(sid).emit("user_left", { userId: meta.userId, socketId: socket.id });
-//       console.log(`Viewer ${socket.id} left room ${sid}`);
-//     } else {
-//       console.log(`Streamer ${socket.id} left room ${sid}`);
-      
-//       if (state.streamerSocketId === socket.id) {
-//         state.streamerSocketId = null;
-//         console.log(`Cleared streamerSocketId for session: ${sid}`);
-//       }
-
-//       const session = await liveSession.findOne({ sessionId: sid });
-//       if (session) {
-//         session.status = "PAUSED";
-//         await session.save();
-//         console.log(`Session ${sid} paused due to streamer leaving`);
-//       }
-
-//       io.to(sid).emit("session_paused_or_ended_by_streamer");
-//     }
-
-//     state.sockets.delete(socket.id);
-//     socket.leave(sid);
-//     console.log(`Socket ${socket.id} removed from room state for session: ${sid}`);
-
-//     // Clean up empty room state
-//     if (state.sockets.size === 0) {
-//       if (state.pendingOps && state.pendingOps.length > 0) {
-//         await flushCanvasOps(sid).catch(err => {
-//           console.error(`Error flushing canvas ops during cleanup for session ${sid}:`, err);
-//         });
-//       }
-
-//       if (state.flushTimer) clearTimeout(state.flushTimer);
-      
-//       if (state.router) {
-//         try {
-//           state.router.close();
-//           console.log(`Mediasoup router closed for session: ${sid}`);
-//         } catch (e) {
-//           console.warn("Error closing router:", e);
-//         }
-//         state.router = null;
-//       }
-      
-//       roomState.delete(sid);
-//       console.log(`Room state cleaned up for session: ${sid}`);
-//     }
-//   } catch (e) {
-//     console.error("cleanupSocketFromRoom error:", e?.message || e);
-//   }
-// };
-
-// const handleScreenShareStart = async (socket, sessionId, transportId, kind, rtpParameters, callback) => {
-//   try {
-//     console.log("Screen share start for transport:", transportId, "kind:", kind);
-//     const state = roomState.get(sessionId);
-//     if (!state) return callback({ error: "Session not found" });
-
-//     const transport = state.transports.get(transportId);
-//     if (!transport) return callback({ error: "Transport not found" });
-
-//     const producer = await transport.produce({
-//       kind,
-//       rtpParameters,
-//       appData: {
-//         socketId: socket.id,
-//         environment: process.env.NODE_ENV,
-//         source: 'screen'  // This identifies it as screen share
-//       },
-//     });
-
-//     state.producers.set(producer.id, producer);
-
-//     producer.on("transportclose", () => {
-//       console.log("Screen share producer transport closed:", producer.id);
-//       try {
-//         producer.close();
-//       } catch (e) {
-//         // ignore
-//       }
-//       state.producers.delete(producer.id);
-//     });
-
-//     callback({ id: producer.id });
-
-//     // Emit a specific event for screen share
-//     socket.to(sessionId).emit("screen-share-started", {
-//       producerId: producer.id,
-//       kind: producer.kind,
-//       userId: socket.data.userId,
-//       source: 'screen'
-//     });
-    
-//     // Also emit the regular new-producer event for compatibility
-//     socket.to(sessionId).emit("new-producer", {
-//       producerId: producer.id,
-//       kind: producer.kind,
-//       userId: socket.data.userId,
-//       source: 'screen'
-//     });
-//   } catch (error) {
-//     console.error("Screen share start error:", error);
-//     callback({ error: error.message });
-//   }
-// };
-// const joinRoomHandler = async (socket, data) => {
-//   const { token, sessionId, roomCode } = data;
-//   console.log(`Join room request from socket: ${socket.id}, sessionId: ${sessionId}, roomCode: ${roomCode}`);
-  
-//   try {
-//     if (!token || (!sessionId && !roomCode)) {
-//       return socket.emit("error_message", "Missing token or sessionId/roomCode");
-//     }
-
-//     let decoded;
-//     try {
-//       decoded = jwt.verify(token, process.env.SECRET_KEY);
-//       console.log(`Token decoded for user: ${decoded.userId}, role: ${decoded.role}`);
-//     } catch (err) {
-//       return socket.emit("error_message", "Invalid token");
-//     }
-    
-//     const userId = decoded.userId;
-//     const userRole = decoded.role;
-
-//     let session;
-//     if (sessionId) {
-//       session = await liveSession.findOne({ sessionId });
-//     } else {
-//       session = await liveSession.findOne({ roomCode });
-//     }
-
-//     if (!session) return socket.emit("error_message", "Session not found");
-//     if (!["SCHEDULED", "ACTIVE", "PAUSED"].includes(session.status)) {
-//       return socket.emit("error_message", `Session is ${session.status}`);
-//     }
-
-//     if (session.isPrivate) {
-//       const allowed = Array.isArray(session.allowedUsers) && 
-//         session.allowedUsers.some(u => u.toString() === userId);
-//       if (!allowed) return socket.emit("error_message", "You are not allowed to join this private session");
-//     }
-
-//     const sid = session.sessionId;
-//     if (!roomState.has(sid)) {
-//       roomState.set(sid, {
-//         whiteboardId: session.whiteboardId || null,
-//         createdBy: session.streamerId ? session.streamerId.toString() : null,
-//         streamerSocketId: null,
-//         viewers: new Set(),
-//         sockets: new Map(),
-//         pendingOps: [],
-//         flushTimer: null,
-//         router: null,
-//         transports: new Map(),
-//         producers: new Map(),
-//         consumers: new Map(),
-//       });
-//       console.log(`New room state created for session: ${sid}`);
-//     }
-    
-//     const state = roomState.get(sid);
-
-//     const maxParticipants = parseInt(process.env.MAX_PARTICIPANTS_PER_SESSION) || 100;
-//     const activeCount = await liveSessionParticipant.countDocuments({ 
-//       sessionId: session._id, 
-//       status: { $ne: "LEFT" } 
-//     });
-    
-//     if (maxParticipants <= activeCount && userRole !== ROLE_MAP.STREAMER) {
-//       return socket.emit("error_message", "Max participants limit reached");
-//     }
-
-//     let participant = await liveSessionParticipant.findOne({ sessionId: session._id, userId });
-//     if (participant && participant.isBanned) {
-//       return socket.emit("error_message", "You are banned from this session");
-//     }
-
-//     if (userRole === ROLE_MAP.STREAMER) {
-//       if (state.streamerSocketId && state.streamerSocketId !== socket.id) {
-//         console.log(`Streamer reconnecting from ${state.streamerSocketId} to ${socket.id}`);
-//         if (state.sockets.has(state.streamerSocketId)) {
-//           state.sockets.delete(state.streamerSocketId);
-//           state.viewers.delete(state.streamerSocketId);
-//         }
-//       }
-//       state.streamerSocketId = socket.id;
-//       console.log(`Streamer socket ID updated to: ${socket.id}`);
-//     }
-
-//     if (!participant) {
-//       participant = await liveSessionParticipant.create({
-//         sessionId: session._id,
-//         userId,
-//         socketId: socket.id,
-//         status: "JOINED",
-//         isActiveDevice: true,
-//         joinedAt: new Date(),
-//       });
-//       session.totalJoins = (session.totalJoins || 0) + 1;
-//       await session.save();
-//       console.log(`New participant created, total joins: ${session.totalJoins}`);
-//     } else {
-//       participant.socketId = socket.id;
-//       participant.status = "JOINED";
-//       participant.isActiveDevice = true;
-//       participant.joinedAt = new Date();
-//       participant.leftAt = null;
-//       await participant.save();
-//     }
-
-//     if (userRole === ROLE_MAP.STREAMER && !state.router) {
-//       console.log("Creating Mediasoup router for session:", sid);
-//       const mediaCodecs = [
-//         {
-//           kind: "audio",
-//           mimeType: "audio/opus",
-//           clockRate: 48000,
-//           channels: 2,
-//         },
-//         {
-//           kind: "video",
-//           mimeType: "video/VP8",
-//           clockRate: 90000,
-//           parameters: {
-//             "x-google-start-bitrate": process.env.NODE_ENV === "production" ? 500000 : 1000000,
-//           },
-//         },
-//       ];
-
-//       state.router = await mediasoupWorker.createRouter({ mediaCodecs });
-//       console.log("Mediasoup router created for session:", sid);
-//     }
-
-//     state.sockets.set(socket.id, { userId, role: userRole });
-//     socket.data = { sessionId: sid, userId, role: userRole };
-//     socket.join(sid);
-//     console.log(`Socket ${socket.id} joined room ${sid}`);
-
-//     const iceServers = getIceServersFromEnv();
-//     socket.emit("ice_servers", iceServers);
-
-//     if (userRole === ROLE_MAP.STREAMER) {
-//       socket.emit("joined_room", {
-//         as: "STREAMER",
-//         sessionId: sid,
-//         roomCode: session.roomCode,
-//         hasMediasoup: !!state.router,
-//         environment: process.env.NODE_ENV,
-//         iceServers: iceServers,
-//         activeProducers: Array.from(state.producers.keys())
-//       });
-//       console.log(`Streamer ${socket.id} joined room ${sid}`);
-//     } else {
-//       state.viewers.add(socket.id);
-//       socket.emit("joined_room", {
-//         as: "VIEWER",
-//         sessionId: sid,
-//         roomCode: session.roomCode,
-//         whiteboardId: state.whiteboardId,
-//         hasMediasoup: !!state.router,
-//         environment: process.env.NODE_ENV,
-//         iceServers: iceServers,
-//         activeProducers: Array.from(state.producers.keys())
-//       });
-//       console.log(`Viewer ${socket.id} joined room ${sid}`);
-      
-//       if (state.streamerSocketId) {
-//         safeEmit(state.streamerSocketId, "viewer_ready", { 
-//           viewerSocketId: socket.id, 
-//           viewerUserId: userId 
-//         });
-//       }
-//     }
-
-//     if (state.whiteboardId) {
-//       const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
-//       if (wb && !wb.participants.find(p => p.user.toString() === userId)) {
-//         wb.participants.push({ 
-//           user: userId, 
-//           role: userRole === ROLE_MAP.STREAMER ? "editor" : "viewer", 
-//           joinedAt: new Date() 
-//         });
-//         await wb.save();
-//         console.log(`User added to whiteboard: ${state.whiteboardId}`);
-//       }
-//     }
-
-//     const currentParticipants = state.viewers.size + (state.streamerSocketId ? 1 : 0);
-//     if ((session.peakParticipants || 0) < currentParticipants) {
-//       session.peakParticipants = currentParticipants;
-//       await session.save();
-//       console.log(`New peak participants: ${currentParticipants}`);
-//     }
-//   } catch (err) {
-//     console.error("join_room error:", err);
-//     socket.emit("error_message", "Invalid token/session");
-//     throw err;
-//   }
-// };
-
-// const chatHandler = async (socket, sessionId, message) => {
-//   console.log(`Chat message from socket: ${socket.id}, session: ${sessionId}`);
-  
-//   try {
-//     const state = roomState.get(sessionId);
-//     if (!state) return;
-
-//     const meta = state.sockets.get(socket.id);
-//     if (!meta) return;
-
-//     const sender = await authenticationModel.findById(meta.userId).select("name");
-    
-//     io.to(sessionId).emit("chat_message", {
-//       userId: meta.userId,
-//       name: sender?.name || "Unknown",
-//       message,
-//       socketId: socket.id,
-//       at: new Date(),
-//     });
-    
-//     console.log(`Chat message broadcast to session: ${sessionId}`);
-//   } catch (err) {
-//     console.error("chat_message error:", err);
-//     throw err;
-//   }
-// };
-
-// const streamerControlHandler = async (socket, data) => {
-//   const { sessionId, status, emitEvent } = data;
-//   console.log(`Streamer control request for session: ${sessionId}, status: ${status}`);
-  
-//   try {
-//     const session = await liveSession.findOne({ sessionId });
-//     if (!session) return;
-
-//     if (status === "PAUSED") {
-//       await pauseAllProducers(sessionId, socket.id);
-//     } else if (status === "ACTIVE") {
-//       await resumeAllProducers(sessionId, socket.id);
-//     }
-
-//     session.status = status;
-//     if (status === "ACTIVE" && emitEvent === "streamer_started") {
-//       session.actualStartTime = new Date();
-//     }
-
-//     await session.save();
-//     io.to(sessionId).emit(emitEvent, { sessionId });
-//     console.log(`Session ${sessionId} ${status.toLowerCase()} by streamer`);
-//   } catch (err) {
-//     console.error("streamer_control error:", err);
-//     throw err;
-//   }
-// };
-
-// const getRouterRtpCapabilitiesHandler = async (socket, sessionId, callback) => {
-//   try {
-//     console.log("getRouterRtpCapabilities for session:", sessionId);
-//     const state = roomState.get(sessionId);
-//     if (!state || !state.router) return callback({ error: "Router not found" });
-//     callback({ rtpCapabilities: state.router.rtpCapabilities });
-//   } catch (error) {
-//     console.error("getRouterRtpCapabilities error:", error);
-//     callback({ error: error.message });
-//   }
-// };
-
-// const createWebRtcTransportHandler = async (socket, sessionId, callback) => {
-//   try {
-//     console.log("createWebRtcTransport for session:", sessionId);
-//     const state = roomState.get(sessionId);
-//     if (!state || !state.router) return callback({ error: "Router not found" });
-
-//     const transport = await state.router.createWebRtcTransport({
-//       listenIps: [
-//         {
-//           ip: "0.0.0.0",
-//           announcedIp: process.env.SERVER_IP || "127.0.0.1",
-//         },
-//       ],
-//       enableUdp: true,
-//       enableTcp: true,
-//       preferUdp: true,
-//       initialAvailableOutgoingBitrate: process.env.NODE_ENV === "production" ? 500000 : 1000000,
-//     });
-
-//     transport.on("dtlsstatechange", (dtlsState) => {
-//       if (dtlsState === "closed") transport.close();
-//     });
-
-//     transport.appData = { socketId: socket.id };
-//     state.transports.set(transport.id, transport);
-
-//     callback({
-//       params: {
-//         id: transport.id,
-//         iceParameters: transport.iceParameters,
-//         iceCandidates: transport.iceCandidates,
-//         dtlsParameters: transport.dtlsParameters,
-//       },
-//     });
-//   } catch (error) {
-//     console.error("createWebRtcTransport error:", error);
-//     callback({ error: error.message });
-//   }
-// };
-
-// const transportConnectHandler = async (socket, sessionId, transportId, dtlsParameters, callback) => {
-//   try {
-//     console.log("transport-connect for transport:", transportId);
-//     const state = roomState.get(sessionId);
-//     if (!state) return callback({ error: "Session not found" });
-
-//     const transport = state.transports.get(transportId);
-//     if (!transport) return callback({ error: "Transport not found" });
-
-//     await transport.connect({ dtlsParameters });
-//     callback({ success: true });
-//   } catch (error) {
-//     console.error("transport-connect error:", error);
-//     callback({ error: error.message });
-//   }
-// };
-
-// const transportProduceHandler = async (socket, sessionId, transportId, kind, rtpParameters, appData, callback) => {
-//   try {
-//     console.log("transport-produce for transport:", transportId, "kind:", kind, "source:", appData?.source);
-//     const state = roomState.get(sessionId);
-//     if (!state) return callback({ error: "Session not found" });
-
-//     const transport = state.transports.get(transportId);
-//     if (!transport) return callback({ error: "Transport not found" });
-
-//     const producer = await transport.produce({
-//       kind,
-//       rtpParameters,
-//       appData: {
-//         socketId: socket.id,
-//         environment: process.env.NODE_ENV,
-//         source: appData?.source || 'camera'
-//       },
-//     });
-
-//     state.producers.set(producer.id, producer);
-
-//     producer.on("transportclose", () => {
-//       console.log("Producer transport closed:", producer.id);
-//       try {
-//         producer.close();
-//       } catch (e) {
-//         // ignore
-//       }
-//       state.producers.delete(producer.id);
-//     });
-
-//     callback({ id: producer.id });
-
-//     socket.to(sessionId).emit("new-producer", {
-//       producerId: producer.id,
-//       kind: producer.kind,
-//       userId: socket.data.userId,
-//       source: appData?.source || 'camera'
-//     });
-//   } catch (error) {
-//     console.error("transport-produce error:", error);
-//     callback({ error: error.message });
-//   }
-// };
-
-// const consumeHandler = async (socket, sessionId, transportId, producerId, rtpCapabilities, callback) => {
-//   try {
-//     console.log("consume for producer:", producerId, "transport:", transportId);
-//     const state = roomState.get(sessionId);
-//     if (!state || !state.router) {
-//       console.log("❌ Router not found for session:", sessionId);
-//       return callback({ error: "Router not found" });
-//     }
-
-//     const producer = state.producers.get(producerId);
-//     if (!producer) {
-//       console.log("❌ Producer not found:", producerId);
-//       return callback({ error: "Producer not found" });
-//     }
-
-//     if (!state.router.canConsume({ producerId, rtpCapabilities })) {
-//       console.log("❌ Cannot consume - router.canConsume returned false");
-//       return callback({ error: "Cannot consume" });
-//     }
-
-//     const transport = state.transports.get(transportId);
-//     if (!transport) {
-//       console.log("❌ Transport not found:", transportId);
-//       return callback({ error: "Transport not found" });
-//     }
-
-//     const consumer = await transport.consume({
-//       producerId,
-//       rtpCapabilities,
-//       paused: true,
-//       appData: {
-//         socketId: socket.id,
-//         environment: process.env.NODE_ENV,
-//       },
-//     });
-
-//     state.consumers.set(consumer.id, consumer);
-//     console.log("✅ Consumer created:", consumer.id);
-
-//     callback({
-//       params: {
-//         id: consumer.id,
-//         producerId,
-//         kind: consumer.kind,
-//         rtpParameters: consumer.rtpParameters,
-//       },
-//     });
-//   } catch (error) {
-//     console.error("consume error:", error);
-//     callback({ error: error.message });
-//   }
-// };
-
-// const consumerResumeHandler = async (socket, sessionId, consumerId, callback) => {
-//   try {
-//     console.log("consumer-resume for consumer:", consumerId);
-//     const state = roomState.get(sessionId);
-//     if (!state) return callback({ error: "Session not found" });
-
-//     const consumer = state.consumers.get(consumerId);
-//     if (!consumer) return callback({ error: "Consumer not found" });
-
-//     await consumer.resume();
-//     callback({ success: true });
-//   } catch (error) {
-//     console.error("consumer-resume error:", error);
-//     callback({ error: error.message });
-//   }
-// };
-
-// const getProducersHandler = async (socket, sessionId, callback) => {
-//   try {
-//     console.log("getProducers for session:", sessionId);
-//     const state = roomState.get(sessionId);
-//     callback(state ? Array.from(state.producers.keys()) : []);
-//   } catch (error) {
-//     console.error("getProducers error:", error);
-//     callback([]);
-//   }
-// };
-
-// const getProducerInfoHandler = async (socket, sessionId, producerId, callback) => {
-//   try {
-//     console.log("getProducerInfo for producer:", producerId);
-//     const state = roomState.get(sessionId);
-//     if (!state) return callback(null);
-
-//     const producer = state.producers.get(producerId);
-//     if (!producer) return callback(null);
-
-//     callback({
-//       id: producer.id,
-//       kind: producer.kind,
-//       userId: socket.data?.userId,
-//       socketId: producer.appData?.socketId,
-//       source: producer.appData?.source || 'camera'
-//     });
-//   } catch (error) {
-//     console.error("getProducerInfo error:", error);
-//     callback(null);
-//   }
-// };
-
-// const consumerReadyHandler = async (socket, sessionId, consumerId, callback) => {
-//   try {
-//     console.log("consumer-ready for consumer:", consumerId);
-//     const state = roomState.get(sessionId);
-//     if (!state) return callback({ error: "Session not found" });
-
-//     const consumer = state.consumers.get(consumerId);
-//     if (!consumer) return callback({ error: "Consumer not found" });
-
-//     callback({ success: true });
-//   } catch (error) {
-//     console.error("consumer-ready error:", error);
-//     callback({ error: error.message });
-//   }
-// };
-
-// const offerHandler = (socket, sessionId, targetSocketId, sdp) => {
-//   console.log(`Offer from socket: ${socket.id} to target: ${targetSocketId}, session: ${sessionId}`);
-//   const state = roomState.get(sessionId);
-//   if (!state || state.streamerSocketId !== socket.id) return;
-//   safeEmit(targetSocketId, "offer", { from: socket.id, sdp });
-// };
-
-// const answerHandler = (socket, sessionId, sdp) => {
-//   console.log(`Answer from socket: ${socket.id}, session: ${sessionId}`);
-//   const state = roomState.get(sessionId);
-//   if (!state) return;
-
-//   const meta = state.sockets.get(socket.id);
-//   if (!meta || meta.role === ROLE_MAP.STREAMER) return;
-
-//   safeEmit(state.streamerSocketId, "answer", { from: socket.id, sdp });
-// };
-
-// const iceCandidateHandler = (socket, sessionId, targetSocketId, candidate) => {
-//   console.log(`ICE candidate from socket: ${socket.id} to target: ${targetSocketId}, session: ${sessionId}`);
-//   const state = roomState.get(sessionId);
-//   if (!state) return;
-//   safeEmit(targetSocketId, "ice-candidate", { from: socket.id, candidate });
-// };
-
-// const whiteboardEventHandler = (socket, sessionId, type, data, patch) => {
-//   console.log(`Whiteboard ${type} from socket: ${socket.id}, session: ${sessionId}`);
-//   const state = roomState.get(sessionId);
-//   if (!state || !state.whiteboardId) return;
-
-//   const meta = state.sockets.get(socket.id);
-//   if (!meta) return;
-
-//   socket.to(sessionId).emit(`whiteboard_${type}`, { 
-//     userId: meta.userId, 
-//     [`${type}Data`]: data 
-//   });
-  
-//   scheduleFlush(sessionId, { type, payload: data, patch, at: new Date() });
-// };
-
-// const whiteboardUndoHandler = async (socket, sessionId) => {
-//   console.log(`Whiteboard undo from socket: ${socket.id}, session: ${sessionId}`);
-//   const state = roomState.get(sessionId);
-//   if (!state || !state.whiteboardId) return;
-
-//   const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
-//   if (!wb) return;
-
-//   const undoStack = wb.undoStack || [];
-//   if (undoStack.length === 0) return;
-
-//   const last = undoStack.pop();
-//   wb.undoStack = undoStack.slice(-500);
-//   wb.redoStack = [...(wb.redoStack || []), last].slice(-500);
-//   wb.lastActivity = new Date();
-  
-//   await wb.save();
-//   io.to(sessionId).emit("whiteboard_undo_applied", { last });
-//   console.log(`Undo applied to whiteboard: ${state.whiteboardId}`);
-// };
-
-// const whiteboardRedoHandler = async (socket, sessionId) => {
-//   console.log(`Whiteboard redo from socket: ${socket.id}, session: ${sessionId}`);
-//   const state = roomState.get(sessionId);
-//   if (!state || !state.whiteboardId) return;
-
-//   const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
-//   if (!wb) return;
-
-//   const redoStack = wb.redoStack || [];
-//   if (redoStack.length === 0) return;
-
-//   const last = redoStack.pop();
-//   wb.redoStack = redoStack.slice(-500);
-//   wb.undoStack = [...(wb.undoStack || []), last].slice(-500);
-//   wb.lastActivity = new Date();
-  
-//   await wb.save();
-//   io.to(sessionId).emit("whiteboard_redo_applied", { last });
-//   console.log(`Redo applied to whiteboard: ${state.whiteboardId}`);
-// };
-
-// const whiteboardSaveCanvasHandler = async (socket, sessionId) => {
-//   console.log(`Whiteboard save request from socket: ${socket.id}, session: ${sessionId}`);
-//   await flushCanvasOps(sessionId).catch(err => {
-//     console.error(`Error saving canvas for session ${sessionId}:`, err);
-//   });
-//   socket.emit("whiteboard_saved");
-//   console.log(`Whiteboard saved for session: ${sessionId}`);
-// };
-
-// const cursorUpdateHandler = (socket, sessionId, position) => {
-//   console.log(`Cursor update from socket: ${socket.id}, session: ${sessionId}`);
-//   const state = roomState.get(sessionId);
-//   if (!state) return;
-
-//   const meta = state.sockets.get(socket.id);
-//   if (!meta) return;
-
-//   socket.to(sessionId).emit("cursor_update", { userId: meta.userId, position });
-// };
-
-// const whiteboardStateRequestHandler = async (socket, sessionId) => {
-//   console.log(`Whiteboard state request from socket: ${socket.id}, session: ${sessionId}`);
-//   const state = roomState.get(sessionId);
-//   if (!state || !state.whiteboardId) return;
-
-//   const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
-//   if (!wb) return;
-
-//   socket.emit("whiteboard_state_sync", {
-//     canvasData: wb.canvasData,
-//     participants: wb.participants,
-//     versionHistory: wb.versionHistory,
-//   });
-  
-//   console.log(`Whiteboard state sent to socket: ${socket.id}`);
 // };
 
 // // ======= Setup Socket.io =======
@@ -1283,108 +39,108 @@ export { getIO };
 //     console.log("New client connected:", socket.id);
 
 //     // Room and chat events
-//     socket.on("join_room", (data) => joinRoomHandler(socket, data));
-//     socket.on("chat_message", (data) => chatHandler(socket, data.sessionId, data.message));
-//     socket.on("streamer_control", (data) => streamerControlHandler(socket, data));
+//     socket.on("join_room", (data) => handlers.joinRoomHandler(socket, data, io, roomState, mediasoupWorker));
+//     socket.on("chat_message", (data) => handlers.chatHandler(socket, data.sessionId, data.message, io, roomState));
+//     socket.on("streamer_control", (data) => handlers.streamerControlHandler(socket, data, io, roomState));
     
 //     // Producer control events
 //     socket.on("producer-pause", (data) => 
-//       producerPauseHandler(socket, data.sessionId, data.producerId)
+//       handlers.producerPauseHandler(socket, data.sessionId, data.producerId, roomState)
 //     );
 //     socket.on("producer-resume", (data) => 
-//       producerResumeHandler(socket, data.sessionId, data.producerId)
+//       handlers.producerResumeHandler(socket, data.sessionId, data.producerId, roomState)
 //     );
 //     socket.on("producer-close", (data) => 
-//       producerCloseHandler(socket, data.sessionId, data.producerId)
+//       handlers.producerCloseHandler(socket, data.sessionId, data.producerId, roomState)
 //     );
     
 //     // Mediasoup events
 //     socket.on("getRouterRtpCapabilities", (data, cb) => 
-//       getRouterRtpCapabilitiesHandler(socket, data.sessionId, cb));
+//       handlers.getRouterRtpCapabilitiesHandler(socket, data.sessionId, cb, roomState));
     
 //     socket.on("createWebRtcTransport", (data, cb) => 
-//       createWebRtcTransportHandler(socket, data.sessionId, cb));
+//       handlers.createWebRtcTransportHandler(socket, data.sessionId, cb, roomState));
     
 //     socket.on("transport-connect", (data, cb) =>
-//       transportConnectHandler(socket, data.sessionId, data.transportId, data.dtlsParameters, cb)
+//       handlers.transportConnectHandler(socket, data.sessionId, data.transportId, data.dtlsParameters, cb, roomState)
 //     );
     
 //     socket.on("transport-produce", (data, cb) =>
-//       transportProduceHandler(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, data.appData, cb)
+//       handlers.transportProduceHandler(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, data.appData, cb, roomState)
 //     );
     
 //     // Screen share specific event
 //     socket.on("transport-produce-screen", (data, cb) =>
-//       handleScreenShareStart(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, cb)
+//       handlers.handleScreenShareStart(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, cb, roomState)
 //     );
     
 //     socket.on("consume", (data, cb) =>
-//       consumeHandler(socket, data.sessionId, data.transportId, data.producerId, data.rtpCapabilities, cb)
+//       handlers.consumeHandler(socket, data.sessionId, data.transportId, data.producerId, data.rtpCapabilities, cb, roomState)
 //     );
     
 //     socket.on("consumer-resume", (data, cb) =>
-//       consumerResumeHandler(socket, data.sessionId, data.consumerId, cb)
+//       handlers.consumerResumeHandler(socket, data.sessionId, data.consumerId, cb, roomState)
 //     );
     
 //     socket.on("getProducers", (data, cb) =>
-//       getProducersHandler(socket, data.sessionId, cb)
+//       handlers.getProducersHandler(socket, data.sessionId, cb, roomState)
 //     );
     
 //     socket.on("getProducerInfo", (data, cb) =>
-//       getProducerInfoHandler(socket, data.sessionId, data.producerId, cb)
+//       handlers.getProducerInfoHandler(socket, data.sessionId, data.producerId, cb, roomState)
 //     );
     
 //     socket.on("consumer-ready", (data, cb) =>
-//       consumerReadyHandler(socket, data.sessionId, data.consumerId, cb)
+//       handlers.consumerReadyHandler(socket, data.sessionId, data.consumerId, cb, roomState)
 //     );
 
 //     // Whiteboard events
 //     socket.on("whiteboard_draw", (data) => 
-//       whiteboardEventHandler(socket, data.sessionId, "draw", data.drawData, data.patch)
+//       handlers.whiteboardEventHandler(socket, data.sessionId, "draw", data.drawData, data.patch, io, roomState)
 //     );
     
 //     socket.on("whiteboard_erase", (data) => 
-//       whiteboardEventHandler(socket, data.sessionId, "erase", data.eraseData, data.patch)
+//       handlers.whiteboardEventHandler(socket, data.sessionId, "erase", data.eraseData, data.patch, io, roomState)
 //     );
     
 //     socket.on("whiteboard_undo", (data) => 
-//       whiteboardUndoHandler(socket, data.sessionId)
+//       handlers.whiteboardUndoHandler(socket, data.sessionId, io, roomState)
 //     );
     
 //     socket.on("whiteboard_redo", (data) => 
-//       whiteboardRedoHandler(socket, data.sessionId)
+//       handlers.whiteboardRedoHandler(socket, data.sessionId, io, roomState)
 //     );
     
 //     socket.on("whiteboard_save", (data) => 
-//       whiteboardSaveCanvasHandler(socket, data.sessionId)
+//       handlers.whiteboardSaveCanvasHandler(socket, data.sessionId, roomState)
 //     );
     
 //     socket.on("whiteboard_cursor", (data) => 
-//       cursorUpdateHandler(socket, data.sessionId, data.position)
+//       handlers.cursorUpdateHandler(socket, data.sessionId, data.position, io, roomState)
 //     );
     
 //     socket.on("whiteboard_state_request", (data) => 
-//       whiteboardStateRequestHandler(socket, data.sessionId)
+//       handlers.whiteboardStateRequestHandler(socket, data.sessionId, roomState)
 //     );
 
 //     // WebRTC events
 //     socket.on("offer", (data) => 
-//       offerHandler(socket, data.sessionId, data.targetSocketId, data.sdp)
+//       handlers.offerHandler(socket, data.sessionId, data.targetSocketId, data.sdp, io, roomState)
 //     );
     
 //     socket.on("answer", (data) => 
-//       answerHandler(socket, data.sessionId, data.sdp)
+//       handlers.answerHandler(socket, data.sessionId, data.sdp, io, roomState)
 //     );
     
 //     socket.on("ice-candidate", (data) => 
-//       iceCandidateHandler(socket, data.sessionId, data.targetSocketId, data.candidate)
+//       handlers.iceCandidateHandler(socket, data.sessionId, data.targetSocketId, data.candidate, io, roomState)
 //     );
 
 //     socket.on("transport-produce-screen", (data, cb) =>
-//       handleScreenShareStart(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, cb)
-// );
+//       handlers.handleScreenShareStart(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, cb, roomState)
+//     );
 
-//     socket.on("disconnect", () => cleanupSocketFromRoom(socket));
+//     socket.on("disconnect", () => handlers.cleanupSocketFromRoom(socket, io, roomState));
 //   });
 
 //   console.log("✅ Socket.io setup complete with enhanced producer control and screen sharing support");
@@ -1393,6 +149,1250 @@ export { getIO };
 
 // // Export functions as named exports
 // export { getIO };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import { Server } from "socket.io";
+import jwt from "jsonwebtoken";
+import mediasoup from "mediasoup";
+import liveSession from "../model/liveSessions/liveeSession.model.js";
+import liveSessionParticipant from "../model/liveSessionParticipant/liveSessionParticipant.model.js";
+import whiteboardModel from "../model/whiteBoards/whiteBoard.model.js";
+import { ROLE_MAP } from "../constant/role.js";
+import authenticationModel from "../../app/model/Authentication/authentication.model.js";
+
+// ======= Global Variables =======
+let io;
+let mediasoupWorker;
+const roomState = new Map();
+
+// ======= Utility Functions =======
+const getIO = () => {
+  if (!io) throw new Error("Socket.io not initialized. Call setupIntegratedSocket first.");
+  return io;
+};
+
+const safeEmit = (toSocketId, event, payload) => {
+  try {
+    const s = io.sockets.sockets.get(toSocketId);
+    if (s) {
+      s.emit(event, payload);
+      console.log(`Emitted ${event} to socket: ${toSocketId}`);
+    } else {
+      console.log(`Socket not found: ${toSocketId}`);
+    }
+  } catch (err) {
+    console.error("safeEmit error:", err);
+  }
+};
+
+const getIceServersFromEnv = () => {
+  const isProduction = process.env.NODE_ENV === "production";
+
+  const servers = [];
+  const stunUrls = (process.env.STUN_URLS || "stun:stun.l.google.com:19302,stun:global.stun.twilio.com:3478")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean);
+  stunUrls.forEach(url => { if (url) servers.push({ urls: url }); });
+
+  if (isProduction) {
+    const turnUrls = (process.env.TURN_URLS || "").split(",").map(s => s.trim()).filter(Boolean);
+    const turnUsername = process.env.TURN_USERNAME;
+    const turnPassword = process.env.TURN_PASSWORD;
+
+    turnUrls.forEach(url => {
+      if (url && turnUsername && turnPassword) {
+        servers.push({
+          urls: url,
+          username: turnUsername,
+          credential: turnPassword
+        });
+      }
+    });
+  }
+  if (servers.length === 0) {
+    servers.push({ urls: "stun:stun.l.google.com:19302" });
+    servers.push({ urls: "stun:global.stun.twilio.com:3478" });
+  }
+
+  return servers;
+};
+
+
+const createMediasoupWorker = async () => {
+  try {
+    const minPort = parseInt(process.env.MEDIASOUP_MIN_PORT) || 40000;
+    const maxPort = parseInt(process.env.MEDIASOUP_MAX_PORT) || 49999;
+    const logLevel = process.env.MEDIASOUP_LOG_LEVEL || "warn";
+
+    mediasoupWorker = await mediasoup.createWorker({
+      logLevel,
+      rtcMinPort: minPort,
+      rtcMaxPort: maxPort,
+    });
+
+    console.log(`Mediasoup Worker Created (Ports: ${minPort}-${maxPort}) for ${process.env.NODE_ENV} environment`);
+
+    mediasoupWorker.on("died", () => {
+      console.error("Mediasoup worker died, restarting in 2 seconds...");
+      setTimeout(() => createMediasoupWorker().catch(console.error), 2000);
+    });
+
+    return mediasoupWorker;
+  } catch (error) {
+    console.error("Failed to create Mediasoup worker:", error);
+    throw error;
+  }
+};
+
+const flushCanvasOps = async (sessionId) => {
+  console.log(`Flushing canvas operations for session: ${sessionId}`);
+  const state = roomState.get(sessionId);
+  if (!state || !state.whiteboardId) {
+    console.log(`No state or whiteboardId found for session: ${sessionId}`);
+    return;
+  }
+  
+  const ops = state.pendingOps || [];
+  if (!ops.length) {
+    console.log(`No pending operations for session: ${sessionId}`);
+    return;
+  }
+  
+  console.log(`Flushing ${ops.length} operations for session: ${sessionId}`);
+  state.pendingOps = [];
+  
+  if (state.flushTimer) {
+    clearTimeout(state.flushTimer);
+    state.flushTimer = null;
+  }
+
+  const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
+  if (!wb) {
+    console.log(`Whiteboard not found with ID: ${state.whiteboardId}`);
+    return;
+  }
+
+  for (const op of ops) {
+    if (op.type === "draw") wb.totalDrawActions = (wb.totalDrawActions || 0) + 1;
+    if (op.type === "erase") wb.totalErases = (wb.totalErases || 0) + 1;
+
+    wb.undoStack = [...(wb.undoStack || []), op].slice(-500);
+    if (op.type === "draw" || op.type === "erase") wb.redoStack = [];
+    if (op.patch) wb.canvasData = { ...(wb.canvasData || {}), ...op.patch };
+  }
+
+  wb.lastActivity = new Date();
+  await wb.save();
+  console.log(`Canvas operations flushed for session: ${sessionId}`);
+};
+
+const scheduleFlush = (sessionId, op) => {
+  console.log(`Scheduling flush for session: ${sessionId}, operation type: ${op?.type}`);
+  const state = roomState.get(sessionId);
+  if (!state) {
+    console.log(`No state found for session: ${sessionId}`);
+    return;
+  }
+  
+  if (!state.pendingOps) state.pendingOps = [];
+  state.pendingOps.push(op);
+  
+  if (state.flushTimer) {
+    console.log(`Flush already scheduled for session: ${sessionId}`);
+    return;
+  }
+  
+  state.flushTimer = setTimeout(() => {
+    flushCanvasOps(sessionId).catch(err => {
+      console.error(`Error flushing canvas operations for session ${sessionId}:`, err);
+    });
+  }, 2000);
+  
+  console.log(`Flush scheduled for session: ${sessionId}`);
+};
+
+export const initWhiteboardRTC = (sessionId, whiteboardId, createdBy) => {
+  console.log(`Initializing whiteboard RTC for session: ${sessionId}, whiteboard: ${whiteboardId}, createdBy: ${createdBy}`);
+  
+  if (!roomState.has(sessionId)) {
+    roomState.set(sessionId, {
+      whiteboardId,
+      createdBy,
+      streamerSocketId: null,
+      viewers: new Set(),
+      sockets: new Map(),
+      pendingOps: [],
+      flushTimer: null,
+      router: null,
+      transports: new Map(),
+      producers: new Map(),
+      consumers: new Map(),
+    });
+    console.log(`New room state created for session: ${sessionId}`);
+  } else {
+    const s = roomState.get(sessionId);
+    s.whiteboardId = s.whiteboardId || whiteboardId;
+    s.createdBy = s.createdBy || createdBy;
+    console.log(`Existing room state updated for session: ${sessionId}`);
+  }
+  
+  return roomState.get(sessionId);
+};
+
+// ======= Producer Control Functions =======
+const pauseAllProducers = async (sessionId, socketId) => {
+  const state = roomState.get(sessionId);
+  if (!state) return;
+
+  console.log(`Pausing all producers for socket: ${socketId} in session: ${sessionId}`);
+  
+  for (const [producerId, producer] of state.producers) {
+    if (producer.appData?.socketId === socketId) {
+      try {
+        await producer.pause();
+        console.log(`Producer ${producerId} paused`);
+        safeEmit(socketId, "producer-paused", { producerId });
+      } catch (error) {
+        console.error("Error pausing producer:", error);
+      }
+    }
+  }
+};
+
+const resumeAllProducers = async (sessionId, socketId) => {
+  const state = roomState.get(sessionId);
+  if (!state) return;
+
+  console.log(`Resuming all producers for socket: ${socketId} in session: ${sessionId}`);
+  
+  for (const [producerId, producer] of state.producers) {
+    if (producer.appData?.socketId === socketId) {
+      try {
+        await producer.resume();
+        console.log(`Producer ${producerId} resumed`);
+        safeEmit(socketId, "producer-resumed", { producerId });
+      } catch (error) {
+        console.error("Error resuming producer:", error);
+      }
+    }
+  }
+};
+
+const producerPauseHandler = async (socket, sessionId, producerId) => {
+  try {
+    console.log("producer-pause for producer:", producerId);
+    const state = roomState.get(sessionId);
+    if (!state) return;
+
+    const producer = state.producers.get(producerId);
+    if (producer && producer.appData?.socketId === socket.id) {
+      await producer.pause();
+      socket.emit("producer-paused", { producerId });
+      console.log(`Producer ${producerId} paused`);
+    }
+  } catch (error) {
+    console.error("producer-pause error:", error);
+  }
+};
+
+const producerResumeHandler = async (socket, sessionId, producerId) => {
+  try {
+    console.log("producer-resume for producer:", producerId);
+    const state = roomState.get(sessionId);
+    if (!state) return;
+
+    const producer = state.producers.get(producerId);
+    if (producer && producer.appData?.socketId === socket.id) {
+      await producer.resume();
+      socket.emit("producer-resumed", { producerId });
+      console.log(`Producer ${producerId} resumed`);
+    }
+  } catch (error) {
+    console.error("producer-resume error:", error);
+  }
+};
+
+const producerCloseHandler = async (socket, sessionId, producerId) => {
+  try {
+    console.log("producer-close for producer:", producerId);
+    const state = roomState.get(sessionId);
+    if (!state) return;
+
+    const producer = state.producers.get(producerId);
+    if (producer) {
+      producer.close();
+      state.producers.delete(producerId);
+      console.log(`Producer ${producerId} closed and removed`);
+      socket.emit("producer-closed", { producerId });
+    }
+  } catch (error) {
+    console.error("producer-close error:", error);
+  }
+};
+
+const cleanupSocketFromRoom = async (socket) => {
+  console.log(`Cleanup requested for socket: ${socket.id}`);
+  try {
+    const sid = socket.data?.sessionId;
+    if (!sid) {
+      console.log(`No session ID found for socket: ${socket.id}`);
+      return;
+    }
+    
+    const state = roomState.get(sid);
+    if (!state) {
+      console.log(`No state found for session: ${sid}`);
+      return;
+    }
+
+    const meta = state.sockets.get(socket.id);
+    if (!meta) {
+      console.log(`No metadata found for socket: ${socket.id}`);
+      return;
+    }
+
+    // Cleanup Mediasoup resources
+    for (const [consumerId, consumer] of state.consumers) {
+      try {
+        if (consumer?.appData?.socketId === socket.id) {
+          consumer.close();
+          state.consumers.delete(consumerId);
+          console.log(`Consumer ${consumerId} cleaned up for socket: ${socket.id}`);
+        }
+      } catch (e) {
+        console.warn("Consumer cleanup error:", e);
+      }
+    }
+
+    for (const [transportId, transport] of state.transports) {
+      try {
+        if (transport?.appData?.socketId === socket.id) {
+          transport.close();
+          state.transports.delete(transportId);
+          console.log(`Transport ${transportId} cleaned up for socket: ${socket.id}`);
+        }
+      } catch (e) {
+        console.warn("Transport cleanup error:", e);
+      }
+    }
+
+    // Handle producers based on role
+    for (const [producerId, producer] of state.producers) {
+      try {
+        if (producer?.appData?.socketId === socket.id) {
+          if (meta.role === ROLE_MAP.STREAMER) {
+            await producer.pause();
+            console.log(`Producer ${producerId} paused during cleanup (streamer)`);
+          } else {
+            producer.close();
+            state.producers.delete(producerId);
+            console.log(`Producer ${producerId} closed and removed (viewer)`);
+          }
+        }
+      } catch (e) {
+        console.warn("Producer cleanup error:", e);
+      }
+    }
+
+    // Whiteboard soft leave
+    if (state.whiteboardId) {
+      console.log(`Processing whiteboard leave for user: ${meta.userId}, whiteboard: ${state.whiteboardId}`);
+      const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
+      if (wb) {
+        const participant = wb.participants.find(p => p.user.toString() === meta.userId);
+        if (participant) {
+          participant.status = "LEFT";
+          participant.leftAt = new Date();
+        }
+        await wb.save();
+        console.log(`User ${meta.userId} left whiteboard ${state.whiteboardId}`);
+      }
+    }
+
+    // Update participant record
+    if (meta.role !== ROLE_MAP.STREAMER) {
+      try {
+        const participant = await liveSessionParticipant.findOne({ 
+          $or: [
+            { sessionId: sid, userId: meta.userId },
+            { socketId: socket.id }
+          ]
+        });
+        
+        if (participant) {
+          participant.status = "LEFT";
+          participant.leftAt = new Date();
+          participant.isActiveDevice = false;
+          await participant.save();
+          console.log(`Participant ${meta.userId} marked as LEFT`);
+        }
+      } catch (e) {
+        console.error("cleanup update error:", e?.message || e);
+      }
+
+      state.viewers.delete(socket.id);
+      io.to(sid).emit("user_left", { userId: meta.userId, socketId: socket.id });
+      console.log(`Viewer ${socket.id} left room ${sid}`);
+    } else {
+      console.log(`Streamer ${socket.id} left room ${sid}`);
+      
+      if (state.streamerSocketId === socket.id) {
+        state.streamerSocketId = null;
+        console.log(`Cleared streamerSocketId for session: ${sid}`);
+      }
+
+      const session = await liveSession.findOne({ sessionId: sid });
+      if (session) {
+        session.status = "PAUSED";
+        await session.save();
+        console.log(`Session ${sid} paused due to streamer leaving`);
+      }
+
+      io.to(sid).emit("session_paused_or_ended_by_streamer");
+    }
+
+    state.sockets.delete(socket.id);
+    socket.leave(sid);
+    console.log(`Socket ${socket.id} removed from room state for session: ${sid}`);
+
+    // Clean up empty room state
+    if (state.sockets.size === 0) {
+      if (state.pendingOps && state.pendingOps.length > 0) {
+        await flushCanvasOps(sid).catch(err => {
+          console.error(`Error flushing canvas ops during cleanup for session ${sid}:`, err);
+        });
+      }
+
+      if (state.flushTimer) clearTimeout(state.flushTimer);
+      
+      if (state.router) {
+        try {
+          state.router.close();
+          console.log(`Mediasoup router closed for session: ${sid}`);
+        } catch (e) {
+          console.warn("Error closing router:", e);
+        }
+        state.router = null;
+      }
+      
+      roomState.delete(sid);
+      console.log(`Room state cleaned up for session: ${sid}`);
+    }
+  } catch (e) {
+    console.error("cleanupSocketFromRoom error:", e?.message || e);
+  }
+};
+
+const handleScreenShareStart = async (socket, sessionId, transportId, kind, rtpParameters, callback) => {
+  try {
+    console.log("Screen share start for transport:", transportId, "kind:", kind);
+    const state = roomState.get(sessionId);
+    if (!state) return callback({ error: "Session not found" });
+
+    const transport = state.transports.get(transportId);
+    if (!transport) return callback({ error: "Transport not found" });
+
+    const producer = await transport.produce({
+      kind,
+      rtpParameters,
+      appData: {
+        socketId: socket.id,
+        environment: process.env.NODE_ENV,
+        source: 'screen'  // This identifies it as screen share
+      },
+    });
+
+    state.producers.set(producer.id, producer);
+
+    producer.on("transportclose", () => {
+      console.log("Screen share producer transport closed:", producer.id);
+      try {
+        producer.close();
+      } catch (e) {
+        // ignore
+      }
+      state.producers.delete(producer.id);
+    });
+
+    callback({ id: producer.id });
+
+    // Emit a specific event for screen share
+    socket.to(sessionId).emit("screen-share-started", {
+      producerId: producer.id,
+      kind: producer.kind,
+      userId: socket.data.userId,
+      source: 'screen'
+    });
+    
+    // Also emit the regular new-producer event for compatibility
+    socket.to(sessionId).emit("new-producer", {
+      producerId: producer.id,
+      kind: producer.kind,
+      userId: socket.data.userId,
+      source: 'screen'
+    });
+  } catch (error) {
+    console.error("Screen share start error:", error);
+    callback({ error: error.message });
+  }
+};
+const joinRoomHandler = async (socket, data) => {
+  const { token, sessionId, roomCode } = data;
+  console.log(`Join room request from socket: ${socket.id}, sessionId: ${sessionId}, roomCode: ${roomCode}`);
+  
+  try {
+    if (!token || (!sessionId && !roomCode)) {
+      return socket.emit("error_message", "Missing token or sessionId/roomCode");
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.SECRET_KEY);
+      console.log(`Token decoded for user: ${decoded.userId}, role: ${decoded.role}`);
+    } catch (err) {
+      return socket.emit("error_message", "Invalid token");
+    }
+    
+    const userId = decoded.userId;
+    const userRole = decoded.role;
+
+    let session;
+    if (sessionId) {
+      session = await liveSession.findOne({ sessionId });
+    } else {
+      session = await liveSession.findOne({ roomCode });
+    }
+
+    if (!session) return socket.emit("error_message", "Session not found");
+    if (!["SCHEDULED", "ACTIVE", "PAUSED"].includes(session.status)) {
+      return socket.emit("error_message", `Session is ${session.status}`);
+    }
+
+    if (session.isPrivate) {
+      const allowed = Array.isArray(session.allowedUsers) && 
+        session.allowedUsers.some(u => u.toString() === userId);
+      if (!allowed) return socket.emit("error_message", "You are not allowed to join this private session");
+    }
+
+    const sid = session.sessionId;
+    if (!roomState.has(sid)) {
+      roomState.set(sid, {
+        whiteboardId: session.whiteboardId || null,
+        createdBy: session.streamerId ? session.streamerId.toString() : null,
+        streamerSocketId: null,
+        viewers: new Set(),
+        sockets: new Map(),
+        pendingOps: [],
+        flushTimer: null,
+        router: null,
+        transports: new Map(),
+        producers: new Map(),
+        consumers: new Map(),
+      });
+      console.log(`New room state created for session: ${sid}`);
+    }
+    
+    const state = roomState.get(sid);
+
+    const maxParticipants = parseInt(process.env.MAX_PARTICIPANTS_PER_SESSION) || 100;
+    const activeCount = await liveSessionParticipant.countDocuments({ 
+      sessionId: session._id, 
+      status: { $ne: "LEFT" } 
+    });
+    
+    if (maxParticipants <= activeCount && userRole !== ROLE_MAP.STREAMER) {
+      return socket.emit("error_message", "Max participants limit reached");
+    }
+
+    let participant = await liveSessionParticipant.findOne({ sessionId: session._id, userId });
+    if (participant && participant.isBanned) {
+      return socket.emit("error_message", "You are banned from this session");
+    }
+
+    if (userRole === ROLE_MAP.STREAMER) {
+      if (state.streamerSocketId && state.streamerSocketId !== socket.id) {
+        console.log(`Streamer reconnecting from ${state.streamerSocketId} to ${socket.id}`);
+        if (state.sockets.has(state.streamerSocketId)) {
+          state.sockets.delete(state.streamerSocketId);
+          state.viewers.delete(state.streamerSocketId);
+        }
+      }
+      state.streamerSocketId = socket.id;
+      console.log(`Streamer socket ID updated to: ${socket.id}`);
+    }
+
+    if (!participant) {
+      participant = await liveSessionParticipant.create({
+        sessionId: session._id,
+        userId,
+        socketId: socket.id,
+        status: "JOINED",
+        isActiveDevice: true,
+        joinedAt: new Date(),
+      });
+      session.totalJoins = (session.totalJoins || 0) + 1;
+      await session.save();
+      console.log(`New participant created, total joins: ${session.totalJoins}`);
+    } else {
+      participant.socketId = socket.id;
+      participant.status = "JOINED";
+      participant.isActiveDevice = true;
+      participant.joinedAt = new Date();
+      participant.leftAt = null;
+      await participant.save();
+    }
+
+    if (userRole === ROLE_MAP.STREAMER && !state.router) {
+      console.log("Creating Mediasoup router for session:", sid);
+      const mediaCodecs = [
+        {
+          kind: "audio",
+          mimeType: "audio/opus",
+          clockRate: 48000,
+          channels: 2,
+        },
+        {
+          kind: "video",
+          mimeType: "video/VP8",
+          clockRate: 90000,
+          parameters: {
+            "x-google-start-bitrate": process.env.NODE_ENV === "production" ? 500000 : 1000000,
+          },
+        },
+      ];
+
+      state.router = await mediasoupWorker.createRouter({ mediaCodecs });
+      console.log("Mediasoup router created for session:", sid);
+    }
+
+    state.sockets.set(socket.id, { userId, role: userRole });
+    socket.data = { sessionId: sid, userId, role: userRole };
+    socket.join(sid);
+    console.log(`Socket ${socket.id} joined room ${sid}`);
+
+    const iceServers = getIceServersFromEnv();
+    socket.emit("ice_servers", iceServers);
+
+    if (userRole === ROLE_MAP.STREAMER) {
+      socket.emit("joined_room", {
+        as: "STREAMER",
+        sessionId: sid,
+        roomCode: session.roomCode,
+        hasMediasoup: !!state.router,
+        environment: process.env.NODE_ENV,
+        iceServers: iceServers,
+        activeProducers: Array.from(state.producers.keys())
+      });
+      console.log(`Streamer ${socket.id} joined room ${sid}`);
+    } else {
+      state.viewers.add(socket.id);
+      socket.emit("joined_room", {
+        as: "VIEWER",
+        sessionId: sid,
+        roomCode: session.roomCode,
+        whiteboardId: state.whiteboardId,
+        hasMediasoup: !!state.router,
+        environment: process.env.NODE_ENV,
+        iceServers: iceServers,
+        activeProducers: Array.from(state.producers.keys())
+      });
+      console.log(`Viewer ${socket.id} joined room ${sid}`);
+      
+      if (state.streamerSocketId) {
+        safeEmit(state.streamerSocketId, "viewer_ready", { 
+          viewerSocketId: socket.id, 
+          viewerUserId: userId 
+        });
+      }
+    }
+
+    if (state.whiteboardId) {
+      const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
+      if (wb && !wb.participants.find(p => p.user.toString() === userId)) {
+        wb.participants.push({ 
+          user: userId, 
+          role: userRole === ROLE_MAP.STREAMER ? "editor" : "viewer", 
+          joinedAt: new Date() 
+        });
+        await wb.save();
+        console.log(`User added to whiteboard: ${state.whiteboardId}`);
+      }
+    }
+
+    const currentParticipants = state.viewers.size + (state.streamerSocketId ? 1 : 0);
+    if ((session.peakParticipants || 0) < currentParticipants) {
+      session.peakParticipants = currentParticipants;
+      await session.save();
+      console.log(`New peak participants: ${currentParticipants}`);
+    }
+  } catch (err) {
+    console.error("join_room error:", err);
+    socket.emit("error_message", "Invalid token/session");
+    throw err;
+  }
+};
+
+const chatHandler = async (socket, sessionId, message) => {
+  console.log(`Chat message from socket: ${socket.id}, session: ${sessionId}`);
+  
+  try {
+    const state = roomState.get(sessionId);
+    if (!state) return;
+
+    const meta = state.sockets.get(socket.id);
+    if (!meta) return;
+
+    const sender = await authenticationModel.findById(meta.userId).select("name");
+    
+    io.to(sessionId).emit("chat_message", {
+      userId: meta.userId,
+      name: sender?.name || "Unknown",
+      message,
+      socketId: socket.id,
+      at: new Date(),
+    });
+    
+    console.log(`Chat message broadcast to session: ${sessionId}`);
+  } catch (err) {
+    console.error("chat_message error:", err);
+    throw err;
+  }
+};
+
+const streamerControlHandler = async (socket, data) => {
+  const { sessionId, status, emitEvent } = data;
+  console.log(`Streamer control request for session: ${sessionId}, status: ${status}`);
+  
+  try {
+    const session = await liveSession.findOne({ sessionId });
+    if (!session) return;
+
+    if (status === "PAUSED") {
+      await pauseAllProducers(sessionId, socket.id);
+    } else if (status === "ACTIVE") {
+      await resumeAllProducers(sessionId, socket.id);
+    }
+
+    session.status = status;
+    if (status === "ACTIVE" && emitEvent === "streamer_started") {
+      session.actualStartTime = new Date();
+    }
+
+    await session.save();
+    io.to(sessionId).emit(emitEvent, { sessionId });
+    console.log(`Session ${sessionId} ${status.toLowerCase()} by streamer`);
+  } catch (err) {
+    console.error("streamer_control error:", err);
+    throw err;
+  }
+};
+
+const getRouterRtpCapabilitiesHandler = async (socket, sessionId, callback) => {
+  try {
+    console.log("getRouterRtpCapabilities for session:", sessionId);
+    const state = roomState.get(sessionId);
+    if (!state || !state.router) return callback({ error: "Router not found" });
+    callback({ rtpCapabilities: state.router.rtpCapabilities });
+  } catch (error) {
+    console.error("getRouterRtpCapabilities error:", error);
+    callback({ error: error.message });
+  }
+};
+
+const createWebRtcTransportHandler = async (socket, sessionId, callback) => {
+  try {
+    console.log("createWebRtcTransport for session:", sessionId);
+    const state = roomState.get(sessionId);
+    if (!state || !state.router) return callback({ error: "Router not found" });
+
+    const transport = await state.router.createWebRtcTransport({
+      listenIps: [
+        {
+          ip: "0.0.0.0",
+          announcedIp: process.env.SERVER_IP || "127.0.0.1",
+        },
+      ],
+      enableUdp: true,
+      enableTcp: true,
+      preferUdp: true,
+      initialAvailableOutgoingBitrate: process.env.NODE_ENV === "production" ? 500000 : 1000000,
+    });
+
+    transport.on("dtlsstatechange", (dtlsState) => {
+      if (dtlsState === "closed") transport.close();
+    });
+
+    transport.appData = { socketId: socket.id };
+    state.transports.set(transport.id, transport);
+
+    callback({
+      params: {
+        id: transport.id,
+        iceParameters: transport.iceParameters,
+        iceCandidates: transport.iceCandidates,
+        dtlsParameters: transport.dtlsParameters,
+      },
+    });
+  } catch (error) {
+    console.error("createWebRtcTransport error:", error);
+    callback({ error: error.message });
+  }
+};
+
+const transportConnectHandler = async (socket, sessionId, transportId, dtlsParameters, callback) => {
+  try {
+    console.log("transport-connect for transport:", transportId);
+    const state = roomState.get(sessionId);
+    if (!state) return callback({ error: "Session not found" });
+
+    const transport = state.transports.get(transportId);
+    if (!transport) return callback({ error: "Transport not found" });
+
+    await transport.connect({ dtlsParameters });
+    callback({ success: true });
+  } catch (error) {
+    console.error("transport-connect error:", error);
+    callback({ error: error.message });
+  }
+};
+
+const transportProduceHandler = async (socket, sessionId, transportId, kind, rtpParameters, appData, callback) => {
+  try {
+    console.log("transport-produce for transport:", transportId, "kind:", kind, "source:", appData?.source);
+    const state = roomState.get(sessionId);
+    if (!state) return callback({ error: "Session not found" });
+
+    const transport = state.transports.get(transportId);
+    if (!transport) return callback({ error: "Transport not found" });
+
+    const producer = await transport.produce({
+      kind,
+      rtpParameters,
+      appData: {
+        socketId: socket.id,
+        environment: process.env.NODE_ENV,
+        source: appData?.source || 'camera'
+      },
+    });
+
+    state.producers.set(producer.id, producer);
+
+    producer.on("transportclose", () => {
+      console.log("Producer transport closed:", producer.id);
+      try {
+        producer.close();
+      } catch (e) {
+        // ignore
+      }
+      state.producers.delete(producer.id);
+    });
+
+    callback({ id: producer.id });
+
+    socket.to(sessionId).emit("new-producer", {
+      producerId: producer.id,
+      kind: producer.kind,
+      userId: socket.data.userId,
+      source: appData?.source || 'camera'
+    });
+  } catch (error) {
+    console.error("transport-produce error:", error);
+    callback({ error: error.message });
+  }
+};
+
+const consumeHandler = async (socket, sessionId, transportId, producerId, rtpCapabilities, callback) => {
+  try {
+    console.log("consume for producer:", producerId, "transport:", transportId);
+    const state = roomState.get(sessionId);
+    if (!state || !state.router) {
+      console.log("❌ Router not found for session:", sessionId);
+      return callback({ error: "Router not found" });
+    }
+
+    const producer = state.producers.get(producerId);
+    if (!producer) {
+      console.log("❌ Producer not found:", producerId);
+      return callback({ error: "Producer not found" });
+    }
+
+    if (!state.router.canConsume({ producerId, rtpCapabilities })) {
+      console.log("❌ Cannot consume - router.canConsume returned false");
+      return callback({ error: "Cannot consume" });
+    }
+
+    const transport = state.transports.get(transportId);
+    if (!transport) {
+      console.log("❌ Transport not found:", transportId);
+      return callback({ error: "Transport not found" });
+    }
+
+    const consumer = await transport.consume({
+      producerId,
+      rtpCapabilities,
+      paused: true,
+      appData: {
+        socketId: socket.id,
+        environment: process.env.NODE_ENV,
+      },
+    });
+
+    state.consumers.set(consumer.id, consumer);
+    console.log("✅ Consumer created:", consumer.id);
+
+    callback({
+      params: {
+        id: consumer.id,
+        producerId,
+        kind: consumer.kind,
+        rtpParameters: consumer.rtpParameters,
+      },
+    });
+  } catch (error) {
+    console.error("consume error:", error);
+    callback({ error: error.message });
+  }
+};
+
+const consumerResumeHandler = async (socket, sessionId, consumerId, callback) => {
+  try {
+    console.log("consumer-resume for consumer:", consumerId);
+    const state = roomState.get(sessionId);
+    if (!state) return callback({ error: "Session not found" });
+
+    const consumer = state.consumers.get(consumerId);
+    if (!consumer) return callback({ error: "Consumer not found" });
+
+    await consumer.resume();
+    callback({ success: true });
+  } catch (error) {
+    console.error("consumer-resume error:", error);
+    callback({ error: error.message });
+  }
+};
+
+const getProducersHandler = async (socket, sessionId, callback) => {
+  try {
+    console.log("getProducers for session:", sessionId);
+    const state = roomState.get(sessionId);
+    callback(state ? Array.from(state.producers.keys()) : []);
+  } catch (error) {
+    console.error("getProducers error:", error);
+    callback([]);
+  }
+};
+
+const getProducerInfoHandler = async (socket, sessionId, producerId, callback) => {
+  try {
+    console.log("getProducerInfo for producer:", producerId);
+    const state = roomState.get(sessionId);
+    if (!state) return callback(null);
+
+    const producer = state.producers.get(producerId);
+    if (!producer) return callback(null);
+
+    callback({
+      id: producer.id,
+      kind: producer.kind,
+      userId: socket.data?.userId,
+      socketId: producer.appData?.socketId,
+      source: producer.appData?.source || 'camera'
+    });
+  } catch (error) {
+    console.error("getProducerInfo error:", error);
+    callback(null);
+  }
+};
+
+const consumerReadyHandler = async (socket, sessionId, consumerId, callback) => {
+  try {
+    console.log("consumer-ready for consumer:", consumerId);
+    const state = roomState.get(sessionId);
+    if (!state) return callback({ error: "Session not found" });
+
+    const consumer = state.consumers.get(consumerId);
+    if (!consumer) return callback({ error: "Consumer not found" });
+
+    callback({ success: true });
+  } catch (error) {
+    console.error("consumer-ready error:", error);
+    callback({ error: error.message });
+  }
+};
+
+const offerHandler = (socket, sessionId, targetSocketId, sdp) => {
+  console.log(`Offer from socket: ${socket.id} to target: ${targetSocketId}, session: ${sessionId}`);
+  const state = roomState.get(sessionId);
+  if (!state || state.streamerSocketId !== socket.id) return;
+  safeEmit(targetSocketId, "offer", { from: socket.id, sdp });
+};
+
+const answerHandler = (socket, sessionId, sdp) => {
+  console.log(`Answer from socket: ${socket.id}, session: ${sessionId}`);
+  const state = roomState.get(sessionId);
+  if (!state) return;
+
+  const meta = state.sockets.get(socket.id);
+  if (!meta || meta.role === ROLE_MAP.STREAMER) return;
+
+  safeEmit(state.streamerSocketId, "answer", { from: socket.id, sdp });
+};
+
+const iceCandidateHandler = (socket, sessionId, targetSocketId, candidate) => {
+  console.log(`ICE candidate from socket: ${socket.id} to target: ${targetSocketId}, session: ${sessionId}`);
+  const state = roomState.get(sessionId);
+  if (!state) return;
+  safeEmit(targetSocketId, "ice-candidate", { from: socket.id, candidate });
+};
+
+const whiteboardEventHandler = (socket, sessionId, type, data, patch) => {
+  console.log(`Whiteboard ${type} from socket: ${socket.id}, session: ${sessionId}`);
+  const state = roomState.get(sessionId);
+  if (!state || !state.whiteboardId) return;
+
+  const meta = state.sockets.get(socket.id);
+  if (!meta) return;
+
+  socket.to(sessionId).emit(`whiteboard_${type}`, { 
+    userId: meta.userId, 
+    [`${type}Data`]: data 
+  });
+  
+  scheduleFlush(sessionId, { type, payload: data, patch, at: new Date() });
+};
+
+const whiteboardUndoHandler = async (socket, sessionId) => {
+  console.log(`Whiteboard undo from socket: ${socket.id}, session: ${sessionId}`);
+  const state = roomState.get(sessionId);
+  if (!state || !state.whiteboardId) return;
+
+  const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
+  if (!wb) return;
+
+  const undoStack = wb.undoStack || [];
+  if (undoStack.length === 0) return;
+
+  const last = undoStack.pop();
+  wb.undoStack = undoStack.slice(-500);
+  wb.redoStack = [...(wb.redoStack || []), last].slice(-500);
+  wb.lastActivity = new Date();
+  
+  await wb.save();
+  io.to(sessionId).emit("whiteboard_undo_applied", { last });
+  console.log(`Undo applied to whiteboard: ${state.whiteboardId}`);
+};
+
+const whiteboardRedoHandler = async (socket, sessionId) => {
+  console.log(`Whiteboard redo from socket: ${socket.id}, session: ${sessionId}`);
+  const state = roomState.get(sessionId);
+  if (!state || !state.whiteboardId) return;
+
+  const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
+  if (!wb) return;
+
+  const redoStack = wb.redoStack || [];
+  if (redoStack.length === 0) return;
+
+  const last = redoStack.pop();
+  wb.redoStack = redoStack.slice(-500);
+  wb.undoStack = [...(wb.undoStack || []), last].slice(-500);
+  wb.lastActivity = new Date();
+  
+  await wb.save();
+  io.to(sessionId).emit("whiteboard_redo_applied", { last });
+  console.log(`Redo applied to whiteboard: ${state.whiteboardId}`);
+};
+
+const whiteboardSaveCanvasHandler = async (socket, sessionId) => {
+  console.log(`Whiteboard save request from socket: ${socket.id}, session: ${sessionId}`);
+  await flushCanvasOps(sessionId).catch(err => {
+    console.error(`Error saving canvas for session ${sessionId}:`, err);
+  });
+  socket.emit("whiteboard_saved");
+  console.log(`Whiteboard saved for session: ${sessionId}`);
+};
+
+const cursorUpdateHandler = (socket, sessionId, position) => {
+  console.log(`Cursor update from socket: ${socket.id}, session: ${sessionId}`);
+  const state = roomState.get(sessionId);
+  if (!state) return;
+
+  const meta = state.sockets.get(socket.id);
+  if (!meta) return;
+
+  socket.to(sessionId).emit("cursor_update", { userId: meta.userId, position });
+};
+
+const whiteboardStateRequestHandler = async (socket, sessionId) => {
+  console.log(`Whiteboard state request from socket: ${socket.id}, session: ${sessionId}`);
+  const state = roomState.get(sessionId);
+  if (!state || !state.whiteboardId) return;
+
+  const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
+  if (!wb) return;
+
+  socket.emit("whiteboard_state_sync", {
+    canvasData: wb.canvasData,
+    participants: wb.participants,
+    versionHistory: wb.versionHistory,
+  });
+  
+  console.log(`Whiteboard state sent to socket: ${socket.id}`);
+};
+
+// ======= Setup Socket.io =======
+export const setupIntegratedSocket = async (server) => {
+  console.log("Setting up integrated socket");
+
+  try {
+    mediasoupWorker = await createMediasoupWorker();
+  } catch (error) {
+    console.error("Failed to initialize Mediasoup:", error);
+    throw error;
+  }
+
+  const corsOrigin = process.env.CORS_ORIGIN || "http://localhost:5174";
+  io = new Server(server, {
+    cors: {
+      origin: corsOrigin,
+      methods: ["GET", "POST"],
+      credentials: true,
+    },
+  });
+
+  console.log(`Socket.io configured with CORS origin: ${corsOrigin} for ${process.env.NODE_ENV} environment`);
+
+  io.on("connection", (socket) => {
+    console.log("New client connected:", socket.id);
+
+    // Room and chat events
+    socket.on("join_room", (data) => joinRoomHandler(socket, data));
+    socket.on("chat_message", (data) => chatHandler(socket, data.sessionId, data.message));
+    socket.on("streamer_control", (data) => streamerControlHandler(socket, data));
+    
+    // Producer control events
+    socket.on("producer-pause", (data) => 
+      producerPauseHandler(socket, data.sessionId, data.producerId)
+    );
+    socket.on("producer-resume", (data) => 
+      producerResumeHandler(socket, data.sessionId, data.producerId)
+    );
+    socket.on("producer-close", (data) => 
+      producerCloseHandler(socket, data.sessionId, data.producerId)
+    );
+    
+    // Mediasoup events
+    socket.on("getRouterRtpCapabilities", (data, cb) => 
+      getRouterRtpCapabilitiesHandler(socket, data.sessionId, cb));
+    
+    socket.on("createWebRtcTransport", (data, cb) => 
+      createWebRtcTransportHandler(socket, data.sessionId, cb));
+    
+    socket.on("transport-connect", (data, cb) =>
+      transportConnectHandler(socket, data.sessionId, data.transportId, data.dtlsParameters, cb)
+    );
+    
+    socket.on("transport-produce", (data, cb) =>
+      transportProduceHandler(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, data.appData, cb)
+    );
+    
+    // Screen share specific event
+    socket.on("transport-produce-screen", (data, cb) =>
+      handleScreenShareStart(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, cb)
+    );
+    
+    socket.on("consume", (data, cb) =>
+      consumeHandler(socket, data.sessionId, data.transportId, data.producerId, data.rtpCapabilities, cb)
+    );
+    
+    socket.on("consumer-resume", (data, cb) =>
+      consumerResumeHandler(socket, data.sessionId, data.consumerId, cb)
+    );
+    
+    socket.on("getProducers", (data, cb) =>
+      getProducersHandler(socket, data.sessionId, cb)
+    );
+    
+    socket.on("getProducerInfo", (data, cb) =>
+      getProducerInfoHandler(socket, data.sessionId, data.producerId, cb)
+    );
+    
+    socket.on("consumer-ready", (data, cb) =>
+      consumerReadyHandler(socket, data.sessionId, data.consumerId, cb)
+    );
+
+    // Whiteboard events
+    socket.on("whiteboard_draw", (data) => 
+      whiteboardEventHandler(socket, data.sessionId, "draw", data.drawData, data.patch)
+    );
+    
+    socket.on("whiteboard_erase", (data) => 
+      whiteboardEventHandler(socket, data.sessionId, "erase", data.eraseData, data.patch)
+    );
+    
+    socket.on("whiteboard_undo", (data) => 
+      whiteboardUndoHandler(socket, data.sessionId)
+    );
+    
+    socket.on("whiteboard_redo", (data) => 
+      whiteboardRedoHandler(socket, data.sessionId)
+    );
+    
+    socket.on("whiteboard_save", (data) => 
+      whiteboardSaveCanvasHandler(socket, data.sessionId)
+    );
+    
+    socket.on("whiteboard_cursor", (data) => 
+      cursorUpdateHandler(socket, data.sessionId, data.position)
+    );
+    
+    socket.on("whiteboard_state_request", (data) => 
+      whiteboardStateRequestHandler(socket, data.sessionId)
+    );
+
+    // WebRTC events
+    socket.on("offer", (data) => 
+      offerHandler(socket, data.sessionId, data.targetSocketId, data.sdp)
+    );
+    
+    socket.on("answer", (data) => 
+      answerHandler(socket, data.sessionId, data.sdp)
+    );
+    
+    socket.on("ice-candidate", (data) => 
+      iceCandidateHandler(socket, data.sessionId, data.targetSocketId, data.candidate)
+    );
+
+    socket.on("transport-produce-screen", (data, cb) =>
+      handleScreenShareStart(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, cb)
+);
+
+    socket.on("disconnect", () => cleanupSocketFromRoom(socket));
+  });
+
+  console.log("✅ Socket.io setup complete with enhanced producer control and screen sharing support");
+  return io;
+};
+
+// Export functions as named exports
+export { getIO };
 
 
 

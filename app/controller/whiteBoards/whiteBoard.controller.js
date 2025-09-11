@@ -7,7 +7,8 @@ import { sendSuccessResponse, sendErrorResponse } from "../../responses/response
 import { errorEn, successEn } from "../../responses/message.js";
 import { genPassword } from "../../utils/password.js";
 import { deleteFileFromS3 } from "../../middleware/aws.s3.js";
-import { initWhiteboardRTC } from "../../services/socketUtils/whiteboard.utils.js";
+import { initWhiteboardRTC } from "../../services/socket.integrated.js"; 
+// import { initWhiteboardRTC } from "../../services/socketUtils/whiteboard.utils.js";
 import { ROLE_MAP } from "../../constant/role.js";
 
 /* =======================

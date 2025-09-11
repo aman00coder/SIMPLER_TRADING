@@ -13,12 +13,29 @@ import morgan from "morgan";
 
 import http from "http";
 import { setupIntegratedSocket } from "./app/services/socket.integrated.js";
-import {createMediasoupWorker} from "./app/services/socketUtils/mediasoup.utils.js"
+import mediasoup from "mediasoup";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+
+// 🔹 Create Mediasoup Worker
+const createMediasoupWorker = async () => {
+  const worker = await mediasoup.createWorker({
+    logLevel: process.env.MEDIASOUP_LOG_LEVEL || "warn",
+    rtcMinPort: parseInt(process.env.MEDIASOUP_MIN_PORT) || 40000,
+    rtcMaxPort: parseInt(process.env.MEDIASOUP_MAX_PORT) || 49999,
+  });
+
+  worker.on("died", () => {
+    console.error("❌ Mediasoup worker died, exiting in 2 seconds...");
+    setTimeout(() => process.exit(1), 2000);
+  });
+
+  console.log("✅ Mediasoup Worker Created");
+  return worker;
+};
 
 // Middleware & setup
 app.use(
@@ -81,7 +98,7 @@ const PORT = process.env.PORT || 9090;
   try {
     const worker = await createMediasoupWorker();
 
-    const io = await setupIntegratedSocket(httpServer);
+    const io = await setupIntegratedSocket(httpServer, worker);
     app.set("io", io);
 
     httpServer.listen(PORT, "0.0.0.0", () => {
@@ -94,9 +111,7 @@ const PORT = process.env.PORT || 9090;
       try {
         io.close();
         await worker.close();
-      } catch (e) {
-        console.error("Error during shutdown:", e);
-      }
+      } catch (e) {}
       process.exit(0);
     };
     process.on("SIGINT", shutdown);
