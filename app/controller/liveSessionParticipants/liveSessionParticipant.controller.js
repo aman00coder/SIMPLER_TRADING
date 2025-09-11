@@ -9,9 +9,6 @@ import { ROLE_MAP } from "../../constant/role.js";
 import { v4 as uuidv4 } from "uuid";
 import { getIO } from "../../services/socket.integrated.js"; // ✅ add this
 
-// ===========================
-// Join Participant (BRD-compliant)
-// ===========================
 export const joinParticipant = async (req, res) => {
   try {
     const {
@@ -22,49 +19,151 @@ export const joinParticipant = async (req, res) => {
       engagementStats,
       geoLocation,
       socketId,
+      roomCode,
     } = req.body;
 
     const userId = req.tokenData.userId;
 
-    let session = await liveSessionModel.findOne({ sessionId });
+    // Find session by sessionId or roomCode
+    let session;
+    if (sessionId) {
+      session = await liveSessionModel.findOne({ sessionId });
+    } else if (roomCode) {
+      session = await liveSessionModel.findOne({ roomCode });
+    }
+    
     if (!session) {
       return sendErrorResponse(res, "Session not found", 404);
     }
+
+    // Use the actual sessionId from the found session
+    const actualSessionId = session.sessionId;
 
     const isBanned = session.bannedParticipants?.includes(userId);
     if (isBanned) {
       return sendErrorResponse(res, "You are banned from this session", 403);
     }
 
+    // Check if session is active or paused (allow rejoining)
+    if (!["ACTIVE", "PAUSED", "SCHEDULED"].includes(session.status)) {
+      return sendErrorResponse(res, `Session is ${session.status}`, 400);
+    }
+
+    // Check for existing participant with same user and device
     const existingParticipant = await liveSessionParticipantModel.findOne({
-      sessionId,
+      sessionId: actualSessionId,
       userId,
       deviceSessionId,
     });
-    if (existingParticipant) {
-      return sendErrorResponse(res, "Already joined", 400);
+
+    // Convert role string to numeric value if needed
+    let numericRole = role;
+    if (typeof role === 'string') {
+      numericRole = ROLE_MAP[role.toUpperCase()] || ROLE_MAP.VIEWER;
     }
 
+    if (existingParticipant) {
+      // Handle reconnection scenario
+      if (existingParticipant.status === "JOINED") {
+        // Check if this is a different socket (reconnection)
+        if (existingParticipant.socketId !== socketId) {
+          // Update socket ID and mark as reconnected
+          existingParticipant.socketId = socketId;
+          existingParticipant.reconnectedAt = new Date();
+          existingParticipant.status = "JOINED";
+          existingParticipant.isActiveDevice = true;
+          existingParticipant.leftAt = null;
+          
+          await existingParticipant.save();
+          
+          // ✅ Inform socket about successful reconnection
+          getIO().to(socketId).emit("participant_reconnected", {
+            userId,
+            sessionId: actualSessionId,
+            role: existingParticipant.role,
+            participantId: existingParticipant._id,
+          });
+
+          return sendSuccessResponse(
+            res,
+            existingParticipant,
+            "Participant reconnected successfully",
+            200
+          );
+        } else {
+          // Same socket, same device - already connected
+          return sendErrorResponse(res, "Already joined with this device", 400);
+        }
+      } else if (existingParticipant.status === "LEFT") {
+        // Participant left previously, allow rejoining
+        existingParticipant.socketId = socketId;
+        existingParticipant.status = "JOINED";
+        existingParticipant.isActiveDevice = true;
+        existingParticipant.joinedAt = new Date();
+        existingParticipant.leftAt = null;
+        existingParticipant.reconnectedAt = new Date();
+        
+        await existingParticipant.save();
+
+        // Update session total joins
+        session.totalJoins = (session.totalJoins || 0) + 1;
+        await session.save();
+
+        // ✅ Inform socket about rejoining
+        getIO().to(socketId).emit("participant_rejoined", {
+          userId,
+          sessionId: actualSessionId,
+          role: existingParticipant.role,
+          participantId: existingParticipant._id,
+        });
+
+        return sendSuccessResponse(
+          res,
+          existingParticipant,
+          "Participant rejoined successfully",
+          200
+        );
+      }
+    }
+
+    // New participant joining for the first time
     const participant = new liveSessionParticipantModel({
-      sessionId,
+      sessionId: actualSessionId,
       userId,
       deviceSessionId,
-      role,
+      role: numericRole, // Use the numeric role value
       socketId,
       networkStats,
       engagementStats,
       geoLocation,
+      status: "JOINED",
+      isActiveDevice: true,
+      joinedAt: new Date(),
     });
+
     await participant.save();
 
-    session.participants.push(userId);
+    // Update session participants and total joins
+    if (!session.participants.includes(userId)) {
+      session.participants.push(userId);
+    }
+    session.totalJoins = (session.totalJoins || 0) + 1;
     await session.save();
 
     // ✅ Inform socket (client will continue WebRTC flow using socket events)
     getIO().to(socketId).emit("participant_joined", {
       userId,
-      sessionId,
-      role,
+      sessionId: actualSessionId,
+      role: participant.role,
+      participantId: participant._id,
+    });
+
+    // Broadcast to other participants in the room
+    getIO().to(actualSessionId).emit("user_joined", {
+      userId,
+      socketId,
+      role: participant.role,
+      name: req.tokenData.name || "User",
     });
 
     return sendSuccessResponse(
@@ -74,6 +173,7 @@ export const joinParticipant = async (req, res) => {
       200
     );
   } catch (error) {
+    console.error("Join participant error:", error);
     return sendErrorResponse(res, error.message, 500);
   }
 };
