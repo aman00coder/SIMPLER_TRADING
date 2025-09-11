@@ -1317,7 +1317,27 @@ export const setupIntegratedSocket = async (server) => {
     socket.on("transport-produce-screen", (data, cb) =>
       handleScreenShareStart(socket, data.sessionId, data.transportId, data.kind, data.rtpParameters, cb)
     );
-    
+
+    // Viewer requests to speak
+    socket.on("viewer-audio-request", (data) => 
+      handleViewerAudioRequest(socket, data.sessionId, data.requestedUserId)
+    );
+
+    // Streamer responds to audio request
+    socket.on("viewer-audio-response", (data) => 
+      handleViewerAudioResponse(socket, data.sessionId, data.requesterSocketId, data.allow)
+    );
+
+    // Viewer produces audio (after permission granted)
+    socket.on("transport-produce-viewer-audio", (data, cb) =>
+      handleViewerAudioProduce(socket, data.sessionId, data.transportId, data.rtpParameters, cb)
+    );
+
+    // Mute a viewer's audio
+    socket.on("viewer-audio-mute", (data) => 
+      handleViewerAudioMute(socket, data.sessionId, data.targetSocketId)
+    );
+        
     socket.on("consume", (data, cb) =>
       consumeHandler(socket, data.sessionId, data.transportId, data.producerId, data.rtpCapabilities, cb)
     );
