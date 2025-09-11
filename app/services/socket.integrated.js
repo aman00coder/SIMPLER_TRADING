@@ -653,6 +653,132 @@ const handleScreenShareStart = async (socket, sessionId, transportId, kind, rtpP
     callback({ error: error.message });
   }
 };
+
+// Add this function to handle viewer audio production
+const handleViewerAudioProduce = async (socket, sessionId, transportId, rtpParameters, callback) => {
+  try {
+    console.log("Viewer audio produce for transport:", transportId);
+    const state = roomState.get(sessionId);
+    if (!state) return callback({ error: "Session not found" });
+
+    const transport = state.transports.get(transportId);
+    if (!transport) return callback({ error: "Transport not found" });
+
+    const producer = await transport.produce({
+      kind: "audio",
+      rtpParameters,
+      appData: {
+        socketId: socket.id,
+        environment: process.env.NODE_ENV,
+        source: 'viewer-mic',
+        userId: socket.data.userId
+      },
+    });
+
+    state.producers.set(producer.id, producer);
+
+    producer.on("transportclose", () => {
+      console.log("Viewer audio producer transport closed:", producer.id);
+      try {
+        producer.close();
+      } catch (e) {
+        // ignore
+      }
+      state.producers.delete(producer.id);
+    });
+
+    callback({ id: producer.id });
+
+    // Notify streamer about new viewer audio
+    if (state.streamerSocketId) {
+      safeEmit(state.streamerSocketId, "viewer-audio-started", {
+        producerId: producer.id,
+        userId: socket.data.userId,
+        socketId: socket.id
+      });
+    }
+  } catch (error) {
+    console.error("Viewer audio produce error:", error);
+    callback({ error: error.message });
+  }
+};
+
+// Add this function to handle viewer audio permission requests
+const handleViewerAudioRequest = async (socket, sessionId, requestedUserId) => {
+  try {
+    console.log("Viewer audio permission request from:", socket.id, "for user:", requestedUserId);
+    const state = roomState.get(sessionId);
+    if (!state || !state.streamerSocketId) return;
+
+    // Forward the request to the streamer
+    safeEmit(state.streamerSocketId, "viewer-audio-request", {
+      requestedUserId,
+      requesterSocketId: socket.id
+    });
+  } catch (error) {
+    console.error("Viewer audio request error:", error);
+  }
+};
+
+// Add this function to handle streamer's response to audio requests
+const handleViewerAudioResponse = async (socket, sessionId, requesterSocketId, allow) => {
+  try {
+    console.log("Viewer audio response from streamer:", allow);
+    const state = roomState.get(sessionId);
+    if (!state) return;
+
+    // Notify the viewer about the streamer's decision
+    safeEmit(requesterSocketId, "viewer-audio-response", {
+      allowed: allow,
+      message: allow ? "You can now speak" : "Streamer denied your audio request"
+    });
+
+    // If allowed, also notify other participants
+    if (allow) {
+      socket.to(sessionId).emit("viewer-audio-enabled", {
+        userId: state.sockets.get(requesterSocketId)?.userId,
+        socketId: requesterSocketId
+      });
+    }
+  } catch (error) {
+    console.error("Viewer audio response error:", error);
+  }
+};
+
+// Add this function to handle muting viewers
+const handleViewerAudioMute = async (socket, sessionId, targetSocketId) => {
+  try {
+    console.log("Muting viewer audio:", targetSocketId);
+    const state = roomState.get(sessionId);
+    if (!state) return;
+
+    // Find and pause the viewer's audio producer
+    for (const [producerId, producer] of state.producers) {
+      if (producer.appData?.socketId === targetSocketId && producer.kind === "audio" && producer.appData?.source === 'viewer-mic') {
+        await producer.pause();
+        console.log(`Viewer audio producer ${producerId} muted`);
+        
+        // Notify the viewer
+        safeEmit(targetSocketId, "viewer-audio-muted", {
+          producerId: producer.id,
+          mutedBy: socket.data.userId
+        });
+        
+        // Notify other participants
+        socket.to(sessionId).emit("viewer-audio-muted", {
+          userId: producer.appData.userId,
+          socketId: targetSocketId,
+          mutedBy: socket.data.userId
+        });
+        
+        break;
+      }
+    }
+  } catch (error) {
+    console.error("Viewer audio mute error:", error);
+  }
+};
+
 const joinRoomHandler = async (socket, data) => {
   const { token, sessionId, roomCode } = data;
   console.log(`Join room request from socket: ${socket.id}, sessionId: ${sessionId}, roomCode: ${roomCode}`);
