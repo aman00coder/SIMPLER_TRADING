@@ -704,16 +704,20 @@ const handleViewerAudioProduce = async (socket, sessionId, transportId, rtpParam
 };
 
 // Add this function to handle viewer audio permission requests
-const handleViewerAudioRequest = async (socket, sessionId, requestedUserId) => {
+const handleViewerAudioRequest = async (socket, sessionId) => {
   try {
-    console.log("Viewer audio permission request from:", socket.id, "for user:", requestedUserId);
+    console.log("Viewer audio permission request from:", socket.id);
     const state = roomState.get(sessionId);
     if (!state || !state.streamerSocketId) return;
 
-    // Forward the request to the streamer
+    const meta = state.sockets.get(socket.id);
+    if (!meta) return;
+
+    // Forward the request to the streamer with viewer info
     safeEmit(state.streamerSocketId, "viewer-audio-request", {
-      requestedUserId,
-      requesterSocketId: socket.id
+      requestedUserId: meta.userId,
+      requesterSocketId: socket.id,
+      requesterName: "Viewer Name" // You should fetch the actual name from your database
     });
   } catch (error) {
     console.error("Viewer audio request error:", error);
@@ -733,10 +737,11 @@ const handleViewerAudioResponse = async (socket, sessionId, requesterSocketId, a
       message: allow ? "You can now speak" : "Streamer denied your audio request"
     });
 
-    // If allowed, also notify other participants
+    // If allowed, notify all participants about the enabled audio
     if (allow) {
-      socket.to(sessionId).emit("viewer-audio-enabled", {
-        userId: state.sockets.get(requesterSocketId)?.userId,
+      const viewerMeta = state.sockets.get(requesterSocketId);
+      io.to(sessionId).emit("viewer-audio-enabled", {
+        userId: viewerMeta?.userId,
         socketId: requesterSocketId
       });
     }
@@ -754,7 +759,9 @@ const handleViewerAudioMute = async (socket, sessionId, targetSocketId) => {
 
     // Find and pause the viewer's audio producer
     for (const [producerId, producer] of state.producers) {
-      if (producer.appData?.socketId === targetSocketId && producer.kind === "audio" && producer.appData?.source === 'viewer-mic') {
+      if (producer.appData?.socketId === targetSocketId && 
+          producer.kind === "audio" && 
+          producer.appData?.source === 'viewer-mic') {
         await producer.pause();
         console.log(`Viewer audio producer ${producerId} muted`);
         
@@ -765,8 +772,9 @@ const handleViewerAudioMute = async (socket, sessionId, targetSocketId) => {
         });
         
         // Notify other participants
-        socket.to(sessionId).emit("viewer-audio-muted", {
-          userId: producer.appData.userId,
+        const viewerMeta = state.sockets.get(targetSocketId);
+        io.to(sessionId).emit("viewer-audio-muted", {
+          userId: viewerMeta?.userId,
           socketId: targetSocketId,
           mutedBy: socket.data.userId
         });
