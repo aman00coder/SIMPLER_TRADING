@@ -7,4 +7,5 @@ router.route("/getAllUsers").get(userController.getAllUsers);
 router.route("/updateUser/:id").put(userController.updateUser);
 router.route("/deleteUser/:id").delete(userController.deletedUser);
 
+
 export default router;
