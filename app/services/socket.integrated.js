@@ -1966,7 +1966,6 @@ export const setupIntegratedSocket = async (server) => {
   return io;
 };
 
-// ====== MISSING HANDLER IMPLEMENTATIONS ======
 
 const handleViewerAudioMuted = async (socket, sessionId, data) => {
   try {
@@ -2055,9 +2054,6 @@ const handleViewerAudioEnabled = async (socket, sessionId, data) => {
     console.error("Viewer audio enabled error:", error);
   }
 };
-
-
-
 
 // Export functions as named exports
 export { getIO };
