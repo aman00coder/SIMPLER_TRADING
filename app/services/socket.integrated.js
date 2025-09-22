@@ -315,6 +315,7 @@ const handleStreamerStopViewerAudio = async (socket, sessionId, targetSocketId) 
           console.error("Error closing viewer audio producer:", e);
         }
 
+        // ❌ Remove producer from state
         state.producers.delete(producerId);
 
         const viewerMeta = state.sockets.get(targetSocketId);
@@ -322,29 +323,29 @@ const handleStreamerStopViewerAudio = async (socket, sessionId, targetSocketId) 
 
         const participant = state.participants.get(viewerMeta.userId);
         if (participant) {
+          // 🔹 Update hasAudio flag
           participant.hasAudio = false;
 
-          // 🔹 Broadcast participant update
+          // 🔹 Update participant object in state
+          state.participants.set(viewerMeta.userId, participant);
+
+          // 🔹 Broadcast a delta update (optional)
           io.to(sessionId).emit("participant_updated", {
             userId: viewerMeta.userId,
             updates: { hasAudio: false },
           });
 
+          // 🔹 Always send full updated snapshot
           broadcastParticipantsList(sessionId);
         }
 
-        // 🔹 Reset producerId reference if stored in viewerMeta
+        // 🔹 Reset producer reference
         viewerMeta.audioProducerId = null;
 
-        // 1️⃣ Sirf us viewer ko notify karo → apna state reset kare
-        io.to(targetSocketId).emit("viewer-audio-stopped", {
+        // 🔹 Tell the target viewer: cleanup & reset UI
+        io.to(targetSocketId).emit("viewer-audio-force-stopped", {
           userId: viewerMeta.userId,
-        });
-
-        // 2️⃣ Sabko notify karo → 🎤 indicator hatao
-        io.to(sessionId).emit("viewer-audio-muted-global", {
-          userId: viewerMeta.userId,
-          socketId: targetSocketId,
+          message: "Streamer stopped your audio, please request again",
         });
 
         console.log(`✅ Viewer audio stopped: ${viewerMeta.userId}`);
@@ -355,6 +356,7 @@ const handleStreamerStopViewerAudio = async (socket, sessionId, targetSocketId) 
     console.error("Streamer stop viewer audio error:", error);
   }
 };
+
 
 
 
@@ -2224,9 +2226,10 @@ socket.on("viewer-audio-response", (data) => {
       handleViewerAudioStarted(socket, data.sessionId, data)
     );
 
-    socket.on("viewer-audio-stop", (data) => 
+    socket.on("streamer-stop-viewer-audio", (data) => 
   handleStreamerStopViewerAudio(socket, data.sessionId, data.targetSocketId)
 );
+
 
     
     socket.on("viewer-video-started", (data) => 
@@ -2592,7 +2595,6 @@ const handleViewerVideoEnabled = async (socket, sessionId, data) => {
 
 // Export functions as named exports
 export { getIO };
-
 
 
 
