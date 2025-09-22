@@ -18,6 +18,17 @@ const getIO = () => {
   return io;
 };
 
+const broadcastParticipantsList = (sessionId) => {
+  const state = roomState.get(sessionId);
+  if (!state) return;
+
+  const currentParticipants = Array.from(state.participants.values());
+  io.to(sessionId).emit("participants_list_updated", {
+    participants: currentParticipants
+  });
+};
+
+
 const safeEmit = (toSocketId, event, payload) => {
   try {
     const s = io.sockets.sockets.get(toSocketId);
@@ -273,12 +284,79 @@ const producerCloseHandler = async (socket, sessionId, producerId) => {
       producer.close();
       state.producers.delete(producerId);
       console.log(`Producer ${producerId} closed and removed`);
-      socket.emit("producer-closed", { producerId });
+      socket.emit("producer-closed", { 
+  producerId,
+  userId: producer.appData?.userId,
+  source: producer.appData?.source
+});
+
     }
   } catch (error) {
     console.error("producer-close error:", error);
   }
 };
+
+
+const handleStreamerStopViewerAudio = async (socket, sessionId, targetSocketId) => {
+  try {
+    console.log("Streamer forcing stop of viewer audio:", targetSocketId);
+    const state = roomState.get(sessionId);
+    if (!state) return;
+
+    for (const [producerId, producer] of state.producers) {
+      if (
+        producer.appData?.socketId === targetSocketId &&
+        producer.kind === "audio" &&
+        producer.appData?.source === "viewer-mic"
+      ) {
+        try {
+          producer.close();
+        } catch (e) {
+          console.error("Error closing viewer audio producer:", e);
+        }
+
+        state.producers.delete(producerId);
+
+        const viewerMeta = state.sockets.get(targetSocketId);
+        if (!viewerMeta) return;
+
+        const participant = state.participants.get(viewerMeta.userId);
+        if (participant) {
+          participant.hasAudio = false;
+
+          // 🔹 Broadcast participant update
+          io.to(sessionId).emit("participant_updated", {
+            userId: viewerMeta.userId,
+            updates: { hasAudio: false },
+          });
+
+          broadcastParticipantsList(sessionId);
+        }
+
+        // 🔹 Reset producerId reference if stored in viewerMeta
+        viewerMeta.audioProducerId = null;
+
+        // 1️⃣ Sirf us viewer ko notify karo → apna state reset kare
+        io.to(targetSocketId).emit("viewer-audio-stopped", {
+          userId: viewerMeta.userId,
+        });
+
+        // 2️⃣ Sabko notify karo → 🎤 indicator hatao
+        io.to(sessionId).emit("viewer-audio-muted-global", {
+          userId: viewerMeta.userId,
+          socketId: targetSocketId,
+        });
+
+        console.log(`✅ Viewer audio stopped: ${viewerMeta.userId}`);
+        break;
+      }
+    }
+  } catch (error) {
+    console.error("Streamer stop viewer audio error:", error);
+  }
+};
+
+
 
 // ======= Screen Share Functions =======
 const handleScreenShareRequest = async (socket, sessionId) => {
@@ -319,15 +397,26 @@ const handleScreenShareRequest = async (socket, sessionId) => {
   }
 };
 
-const handleScreenShareResponse = async (socket, sessionId, requesterIdentifier, allow) => {
+
+const handleScreenShareResponse = async (
+  socket,
+  sessionId,
+  requesterIdentifier,
+  allow
+) => {
   try {
-    console.log("Screen share response from streamer:", allow, "for:", requesterIdentifier);
+    console.log(
+      "Screen share response from streamer:",
+      allow,
+      "for:",
+      requesterIdentifier
+    );
     const state = roomState.get(sessionId);
     if (!state) return;
 
     // Find the request by socketId or userId
     let request;
-    
+
     // First try to find by socketId (shorter ID)
     if (requesterIdentifier && requesterIdentifier.length < 24) {
       for (const [userId, req] of state.pendingScreenShareRequests) {
@@ -336,22 +425,29 @@ const handleScreenShareResponse = async (socket, sessionId, requesterIdentifier,
           break;
         }
       }
-    } 
+    }
+
     // If not found, try by userId
     if (!request) {
       request = state.pendingScreenShareRequests.get(requesterIdentifier);
     }
 
     if (!request) {
-      console.log("No pending screen share request found for:", requesterIdentifier);
+      console.log(
+        "No pending screen share request found for:",
+        requesterIdentifier
+      );
       return;
     }
 
     state.pendingScreenShareRequests.delete(request.userId);
 
+    // 🔴 Old event (direct response to requester)
     safeEmit(request.socketId, "screen-share-response", {
       allowed: allow,
-      message: allow ? "You can now share your screen" : "Streamer denied your screen share request"
+      message: allow
+        ? "You can now share your screen"
+        : "Streamer denied your screen share request",
     });
 
     if (allow) {
@@ -360,24 +456,29 @@ const handleScreenShareResponse = async (socket, sessionId, requesterIdentifier,
         userId: request.userId,
         socketId: request.socketId,
         userName: request.userName,
-        startedAt: new Date()
+        startedAt: new Date(),
       });
-      
-      // Update participant status
+
+      // ✅ Update participant status
       const participant = state.participants.get(request.userId);
       if (participant) {
         participant.isScreenSharing = true;
+
+        // 🔴 Old event (partial update)
         io.to(sessionId).emit("participant_updated", {
           userId: request.userId,
-          updates: { isScreenSharing: true }
+          updates: { isScreenSharing: true },
         });
+
+        // 🟢 New event (full snapshot)
+        broadcastParticipantsList(sessionId);
       }
-      
-      // Notify all participants that screen share is starting
+
+      // 🔴 Old event (notify all participants about start)
       io.to(sessionId).emit("screen-share-started-by-viewer", {
         userId: request.userId,
         userName: request.userName,
-        socketId: request.socketId
+        socketId: request.socketId,
       });
     }
   } catch (error) {
@@ -524,8 +625,11 @@ const handleViewerScreenShareAudio = async (socket, sessionId, transportId, rtpP
     callback({ error: error.message });
   }
 };
-
-const handleViewerScreenShareStop = async (socket, sessionId, userId = null) => {
+const handleViewerScreenShareStop = async (
+  socket,
+  sessionId,
+  userId = null
+) => {
   try {
     console.log("Viewer screen share stop from:", socket.id);
     const state = roomState.get(sessionId);
@@ -536,18 +640,28 @@ const handleViewerScreenShareStop = async (socket, sessionId, userId = null) => 
 
     state.activeScreenShares.delete(targetUserId);
 
+    // ✅ Update participant status
     const participant = state.participants.get(targetUserId);
     if (participant) {
       participant.isScreenSharing = false;
+
+      // 🔴 Old event (partial update — keep for compatibility)
       io.to(sessionId).emit("participant_updated", {
         userId: targetUserId,
-        updates: { isScreenSharing: false }
+        updates: { isScreenSharing: false },
       });
+
+      // 🟢 New event (full snapshot)
+      broadcastParticipantsList(sessionId);
     }
 
+    // Clean up screen share producers
     for (const [producerId, producer] of state.producers) {
-      if (producer.appData?.userId === targetUserId && 
-          (producer.appData?.source === 'viewer-screen' || producer.appData?.source === 'viewer-screen-audio')) {
+      if (
+        producer.appData?.userId === targetUserId &&
+        (producer.appData?.source === "viewer-screen" ||
+          producer.appData?.source === "viewer-screen-audio")
+      ) {
         try {
           producer.close();
           state.producers.delete(producerId);
@@ -558,8 +672,9 @@ const handleViewerScreenShareStop = async (socket, sessionId, userId = null) => 
       }
     }
 
+    // 🔴 Old event (notify all participants)
     io.to(sessionId).emit("screen-share-stopped-by-viewer", {
-      userId: targetUserId
+      userId: targetUserId,
     });
 
     console.log(`Screen share stopped for user: ${targetUserId}`);
@@ -578,20 +693,28 @@ const handleStreamerStopScreenShare = async (socket, sessionId, targetUserId) =>
     // ❌ yeh missing tha
     state.activeScreenShares.delete(targetUserId);
 
-    // Update participant status
+    // ✅ Update participant status
     const participant = state.participants.get(targetUserId);
     if (participant) {
       participant.isScreenSharing = false;
+
+      // 🔴 Old event (partial update — keep for compatibility)
       io.to(sessionId).emit("participant_updated", {
         userId: targetUserId,
-        updates: { isScreenSharing: false }
+        updates: { isScreenSharing: false },
       });
+
+      // 🟢 New event (full snapshot)
+      broadcastParticipantsList(sessionId);
     }
 
     // Find and close the screen share producer(s)
     for (const [producerId, producer] of state.producers) {
-      if (producer.appData?.userId === targetUserId &&
-          (producer.appData?.source === "viewer-screen" || producer.appData?.source === "viewer-screen-audio")) {
+      if (
+        producer.appData?.userId === targetUserId &&
+        (producer.appData?.source === "viewer-screen" ||
+          producer.appData?.source === "viewer-screen-audio")
+      ) {
         try {
           producer.close();
         } catch (e) {}
@@ -604,13 +727,13 @@ const handleStreamerStopScreenShare = async (socket, sessionId, targetUserId) =>
     const viewerSocket = state.participants.get(targetUserId)?.socketId;
     if (viewerSocket) {
       safeEmit(viewerSocket, "screen-share-force-stop", {
-        message: "Streamer stopped your screen share"
+        message: "Streamer stopped your screen share",
       });
     }
 
-    // Notify all participants
+    // 🔴 Old event (notify all participants)
     io.to(sessionId).emit("screen-share-stopped-by-viewer", {
-      userId: targetUserId
+      userId: targetUserId,
     });
 
     console.log(`✅ Streamer forced stop of screen share for user ${targetUserId}`);
@@ -634,9 +757,15 @@ const getParticipantsHandler = async (socket, sessionId, callback) => {
   }
 };
 
+
 const updateParticipantStatusHandler = async (socket, sessionId, updates) => {
   try {
-    console.log("updateParticipantStatus for session:", sessionId, "updates:", updates);
+    console.log(
+      "updateParticipantStatus for session:",
+      sessionId,
+      "updates:",
+      updates
+    );
     const state = roomState.get(sessionId);
     if (!state) return;
 
@@ -645,17 +774,24 @@ const updateParticipantStatusHandler = async (socket, sessionId, updates) => {
 
     const participant = state.participants.get(meta.userId);
     if (participant) {
+      // update participant object
       Object.assign(participant, updates);
-      
+
+      // 🔴 Old event (partial update — keep for compatibility)
       io.to(sessionId).emit("participant_updated", {
         userId: meta.userId,
-        updates
+        updates,
       });
+
+      // 🟢 New event (always send full list)
+      broadcastParticipantsList(sessionId);
     }
   } catch (error) {
     console.error("updateParticipantStatus error:", error);
   }
 };
+
+
 
 const cleanupSocketFromRoom = async (socket) => {
   console.log(`Cleanup requested for socket: ${socket.id}`);
@@ -665,7 +801,7 @@ const cleanupSocketFromRoom = async (socket) => {
       console.log(`No session ID found for socket: ${socket.id}`);
       return;
     }
-    
+
     const state = roomState.get(sid);
     if (!state) {
       console.log(`No state found for session: ${sid}`);
@@ -727,18 +863,24 @@ const cleanupSocketFromRoom = async (socket) => {
 
     if (meta.userId) {
       state.participants.delete(meta.userId);
-      
+
+      const currentParticipants = Array.from(state.participants.values());
+      // 🔴 Old event (keep for compatibility)
       io.to(sid).emit("participant_left", {
-        userId: meta.userId,
-        socketId: socket.id
+        participants: currentParticipants,
       });
+
+      // 🟢 New event: full list
+      broadcastParticipantsList(sid);
     }
 
     if (state.whiteboardId) {
-      console.log(`Processing whiteboard leave for user: ${meta.userId}, whiteboard: ${state.whiteboardId}`);
+      console.log(
+        `Processing whiteboard leave for user: ${meta.userId}, whiteboard: ${state.whiteboardId}`
+      );
       const wb = await whiteboardModel.findOne({ whiteboardId: state.whiteboardId });
       if (wb) {
-        const participant = wb.participants.find(p => p.user.toString() === meta.userId);
+        const participant = wb.participants.find((p) => p.user.toString() === meta.userId);
         if (participant) {
           participant.status = "LEFT";
           participant.leftAt = new Date();
@@ -750,13 +892,10 @@ const cleanupSocketFromRoom = async (socket) => {
 
     if (meta.role !== ROLE_MAP.STREAMER) {
       try {
-        const participant = await liveSessionParticipant.findOne({ 
-          $or: [
-            { sessionId: sid, userId: meta.userId },
-            { socketId: socket.id }
-          ]
+        const participant = await liveSessionParticipant.findOne({
+          $or: [{ sessionId: sid, userId: meta.userId }, { socketId: socket.id }],
         });
-        
+
         if (participant) {
           participant.status = "LEFT";
           participant.leftAt = new Date();
@@ -769,11 +908,12 @@ const cleanupSocketFromRoom = async (socket) => {
       }
 
       state.viewers.delete(socket.id);
+
       io.to(sid).emit("user_left", { userId: meta.userId, socketId: socket.id });
       console.log(`Viewer ${socket.id} left room ${sid}`);
     } else {
       console.log(`Streamer ${socket.id} left room ${sid}`);
-      
+
       if (state.streamerSocketId === socket.id) {
         state.streamerSocketId = null;
         console.log(`Cleared streamerSocketId for session: ${sid}`);
@@ -795,13 +935,16 @@ const cleanupSocketFromRoom = async (socket) => {
 
     if (state.sockets.size === 0) {
       if (state.pendingOps && state.pendingOps.length > 0) {
-        await flushCanvasOps(sid).catch(err => {
-          console.error(`Error flushing canvas ops during cleanup for session ${sid}:`, err);
+        await flushCanvasOps(sid).catch((err) => {
+          console.error(
+            `Error flushing canvas ops during cleanup for session ${sid}:`,
+            err
+          );
         });
       }
 
       if (state.flushTimer) clearTimeout(state.flushTimer);
-      
+
       if (state.router) {
         try {
           state.router.close();
@@ -811,7 +954,7 @@ const cleanupSocketFromRoom = async (socket) => {
         }
         state.router = null;
       }
-      
+
       roomState.delete(sid);
       console.log(`Room state cleaned up for session: ${sid}`);
     }
@@ -873,7 +1016,13 @@ const handleScreenShareStart = async (socket, sessionId, transportId, kind, rtpP
   }
 };
 
-const handleViewerAudioProduce = async (socket, sessionId, transportId, rtpParameters, callback) => {
+const handleViewerAudioProduce = async (
+  socket,
+  sessionId,
+  transportId,
+  rtpParameters,
+  callback
+) => {
   try {
     console.log("Viewer audio produce for transport:", transportId);
     const state = roomState.get(sessionId);
@@ -888,40 +1037,46 @@ const handleViewerAudioProduce = async (socket, sessionId, transportId, rtpParam
       appData: {
         socketId: socket.id,
         environment: process.env.NODE_ENV,
-        source: 'viewer-mic',
-        userId: socket.data.userId
+        source: "viewer-mic",
+        userId: socket.data.userId,
       },
     });
 
     state.producers.set(producer.id, producer);
 
-    // Notify all participants about the new audio producer
+    // 🔴 Old event: notify all participants about the new audio producer
     io.to(sessionId).emit("new-producer", {
       producerId: producer.id,
       kind: producer.kind,
       userId: socket.data.userId,
-      source: 'viewer-mic'
+      source: "viewer-mic",
     });
 
-    // ✅ FIX: Now emit audio permission granted WITH real producerId
+    // 🔴 Old event: audio permission granted
     io.to(sessionId).emit("viewer-audio-permission-granted", {
       userId: socket.data.userId,
       producerId: producer.id,
       socketId: socket.id,
-      userName: state.sockets.get(socket.id)?.userName || 'Viewer'
+      userName: state.sockets.get(socket.id)?.userName || "Viewer",
     });
 
     callback({ id: producer.id });
 
+    // Participant update
     const meta = state.sockets.get(socket.id);
     if (meta) {
       const participant = state.participants.get(meta.userId);
       if (participant) {
         participant.hasAudio = true;
+
+        // 🔴 Old event (keep for compatibility)
         io.to(sessionId).emit("participant_updated", {
           userId: meta.userId,
-          updates: { hasAudio: true }
+          updates: { hasAudio: true },
         });
+
+        // 🟢 New event (full snapshot)
+        broadcastParticipantsList(sessionId);
       }
     }
 
@@ -934,7 +1089,6 @@ const handleViewerAudioProduce = async (socket, sessionId, transportId, rtpParam
       }
       state.producers.delete(producer.id);
     });
-
   } catch (error) {
     console.error("Viewer audio produce error:", error);
     callback({ error: error.message });
@@ -942,7 +1096,14 @@ const handleViewerAudioProduce = async (socket, sessionId, transportId, rtpParam
 };
 
 
-const handleViewerVideoProduce = async (socket, sessionId, transportId, rtpParameters, callback) => {
+
+const handleViewerVideoProduce = async (
+  socket,
+  sessionId,
+  transportId,
+  rtpParameters,
+  callback
+) => {
   try {
     console.log("Viewer video produce for transport:", transportId);
     const state = roomState.get(sessionId);
@@ -957,22 +1118,40 @@ const handleViewerVideoProduce = async (socket, sessionId, transportId, rtpParam
       appData: {
         socketId: socket.id,
         environment: process.env.NODE_ENV,
-        source: 'viewer-camera',
-        userId: socket.data.userId
+        source: "viewer-camera",
+        userId: socket.data.userId,
       },
     });
 
     state.producers.set(producer.id, producer);
 
-    // Notify all participants about the new video producer
+    // 🔴 Old event: notify all participants about the new video producer
     io.to(sessionId).emit("new-producer", {
       producerId: producer.id,
       kind: producer.kind,
       userId: socket.data.userId,
-      source: 'viewer-camera'
+      source: "viewer-camera",
     });
 
     callback({ id: producer.id });
+
+    // ✅ Update participant status
+    const meta = state.sockets.get(socket.id);
+    if (meta) {
+      const participant = state.participants.get(meta.userId);
+      if (participant) {
+        participant.hasVideo = true;
+
+        // 🔴 Old event (partial update — keep for compatibility)
+        io.to(sessionId).emit("participant_updated", {
+          userId: meta.userId,
+          updates: { hasVideo: true },
+        });
+
+        // 🟢 New event (full snapshot)
+        broadcastParticipantsList(sessionId);
+      }
+    }
 
     producer.on("transportclose", () => {
       console.log("Viewer video producer transport closed:", producer.id);
@@ -983,12 +1162,12 @@ const handleViewerVideoProduce = async (socket, sessionId, transportId, rtpParam
       }
       state.producers.delete(producer.id);
     });
-
   } catch (error) {
     console.error("Viewer video produce error:", error);
     callback({ error: error.message });
   }
 };
+
 
 const handleViewerAudioRequest = async (socket, sessionId) => {
   try {
@@ -1031,16 +1210,41 @@ const handleViewerVideoRequest = async (socket, sessionId) => {
     console.error("Viewer video request error:", error);
   }
 };
+
+
 const handleViewerAudioResponse = (socket, sessionId, requesterSocketId, allow) => {
-  console.log(`Viewer audio response from streamer: ${allow} for: ${requesterSocketId}`);
+  console.log(`🎧 Viewer audio response from streamer: ${allow} for: ${requesterSocketId}`);
+  const state = roomState.get(sessionId);
+  if (!state) return;
+
+  const viewerMeta = state.sockets.get(requesterSocketId);
+  if (!viewerMeta) return;
+
+  const participant = state.participants.get(viewerMeta.userId);
 
   if (allow) {
-    // Sirf viewer ko response bhejo
-    io.to(requesterSocketId).emit("viewer-audio-response", { allowed: true });
+    // ✅ Tell viewer to start producing audio
+    io.to(requesterSocketId).emit("viewer-audio-response", { 
+      allowed: true,
+      mustProduce: true   // 👈 important flag for frontend
+    });
+
+    if (participant) {
+      participant.hasAudio = true;  // 🔥 mark audio as active
+      io.to(sessionId).emit("participant_updated", {
+        userId: viewerMeta.userId,
+        updates: { hasAudio: true },
+      });
+
+      // 🔄 broadcast full updated participant list
+      broadcastParticipantsList(sessionId);
+    }
   } else {
     io.to(requesterSocketId).emit("viewer-audio-response", { allowed: false });
   }
 };
+
+
 
 
 
@@ -1132,29 +1336,37 @@ const handleViewerAudioMute = async (socket, sessionId, targetSocketId) => {
     if (!state) return;
 
     for (const [producerId, producer] of state.producers) {
-      if (producer.appData?.socketId === targetSocketId && 
-          producer.kind === "audio" && 
-          producer.appData?.source === 'viewer-mic') {
+      if (
+        producer.appData?.socketId === targetSocketId &&
+        producer.kind === "audio" &&
+        producer.appData?.source === "viewer-mic"
+      ) {
         await producer.pause();
         console.log(`Viewer audio producer ${producerId} muted`);
-        
+
         const viewerMeta = state.sockets.get(targetSocketId);
         if (viewerMeta) {
           const participant = state.participants.get(viewerMeta.userId);
           if (participant) {
             participant.hasAudio = false;
+
+            // 🔴 Old event (partial update — keep for compatibility)
             io.to(sessionId).emit("participant_updated", {
               userId: viewerMeta.userId,
-              updates: { hasAudio: false }
+              updates: { hasAudio: false },
             });
+
+            // 🟢 New event (full snapshot)
+            broadcastParticipantsList(sessionId);
           }
         }
-        
+
+        // 🔴 Old event (notify muted viewer only)
         safeEmit(targetSocketId, "viewer-audio-muted", {
           producerId: producer.id,
-          mutedBy: socket.data.userId
+          mutedBy: socket.data.userId,
         });
-        
+
         break;
       }
     }
@@ -1170,29 +1382,37 @@ const handleViewerVideoMute = async (socket, sessionId, targetSocketId) => {
     if (!state) return;
 
     for (const [producerId, producer] of state.producers) {
-      if (producer.appData?.socketId === targetSocketId && 
-          producer.kind === "video" && 
-          producer.appData?.source === 'viewer-camera') {
+      if (
+        producer.appData?.socketId === targetSocketId &&
+        producer.kind === "video" &&
+        producer.appData?.source === "viewer-camera"
+      ) {
         await producer.pause();
         console.log(`Viewer video producer ${producerId} muted`);
-        
+
         const viewerMeta = state.sockets.get(targetSocketId);
         if (viewerMeta) {
           const participant = state.participants.get(viewerMeta.userId);
           if (participant) {
             participant.hasVideo = false;
+
+            // 🔴 Old event (partial update — keep for compatibility)
             io.to(sessionId).emit("participant_updated", {
               userId: viewerMeta.userId,
-              updates: { hasVideo: false }
+              updates: { hasVideo: false },
             });
+
+            // 🟢 New event (full snapshot)
+            broadcastParticipantsList(sessionId);
           }
         }
-        
+
+        // 🔴 Old event (notify muted viewer only)
         safeEmit(targetSocketId, "viewer-video-muted", {
           producerId: producer.id,
-          mutedBy: socket.data.userId
+          mutedBy: socket.data.userId,
         });
-        
+
         break;
       }
     }
@@ -1270,7 +1490,13 @@ const createConsumer = async (socket, sessionId, producerId, kind) => {
 
     consumer.on("producerclose", () => {
       console.log("Producer closed for consumer:", consumer.id);
-      socket.emit("producer-closed", { consumerId: consumer.id });
+
+      socket.emit("producer-closed", { 
+    consumerId: consumer.id,
+    producerId: producer.producerId,  // 👈 optional, if needed
+    userId: producer.appData?.userId,
+    source: producer.appData?.source
+  });
       state.consumers.delete(consumer.id);
     });
 
@@ -1278,6 +1504,7 @@ const createConsumer = async (socket, sessionId, producerId, kind) => {
     console.error("createConsumer error:", error);
   }
 };
+
 
 const joinRoomHandler = async (socket, data) => {
   const { token, sessionId, roomCode } = data;
@@ -1433,19 +1660,16 @@ const joinRoomHandler = async (socket, data) => {
     const iceServers = getIceServersFromEnv();
     socket.emit("ice_servers", iceServers);
 
+    // 🔴 Old event (keep for compatibility)
+    const currentParticipants = Array.from(state.participants.values());
     io.to(sid).emit("participant_joined", {
-      userId,
-      name: user?.name || "Unknown",
-      role: userRole,
-      socketId: socket.id,
-      joinedAt: new Date(),
-      isSpeaking: false,
-      hasAudio: false,
-      hasVideo: false,
-      isScreenSharing: false,
+      participants: currentParticipants
     });
 
-    const currentParticipants = Array.from(state.participants.values());
+    // 🟢 New full list event (always latest snapshot)
+    broadcastParticipantsList(sid);
+
+    // Sirf newly joined socket ke liye current list
     socket.emit("participants_list", currentParticipants);
 
     if (userRole === ROLE_MAP.STREAMER) {
@@ -1458,7 +1682,8 @@ const joinRoomHandler = async (socket, data) => {
         iceServers: iceServers,
         activeProducers: Array.from(state.producers.keys()),
         pendingScreenShareRequests: Array.from(state.pendingScreenShareRequests.values()),
-        activeScreenShares: Array.from(state.activeScreenShares.values())
+        activeScreenShares: Array.from(state.activeScreenShares.values()),
+        participants: Array.from(state.participants.values())
       });
       console.log(`Streamer ${socket.id} joined room ${sid}`);
     } else {
@@ -1471,7 +1696,8 @@ const joinRoomHandler = async (socket, data) => {
         hasMediasoup: !!state.router,
         environment: process.env.NODE_ENV,
         iceServers: iceServers,
-        activeProducers: Array.from(state.producers.keys())
+        activeProducers: Array.from(state.producers.keys()),
+        participants: Array.from(state.participants.values())
       });
       console.log(`Viewer ${socket.id} joined room ${sid}`);
       
@@ -1508,6 +1734,7 @@ const joinRoomHandler = async (socket, data) => {
     throw err;
   }
 };
+
 
 const chatHandler = async (socket, sessionId, message) => {
   console.log(`Chat message from socket: ${socket.id}, session: ${sessionId}`);
@@ -1943,10 +2170,7 @@ export const setupIntegratedSocket = async (server) => {
 
     // ====== NEW EVENT HANDLERS ADDED ======
     // These events will forward messages to all clients in the room
-    socket.on("new-producer", (data) => {
-      console.log("New producer event received, forwarding to room:", data.sessionId);
-      socket.to(data.sessionId).emit("new-producer", data);
-    });
+   
     
     socket.on("viewer-audio-enabled", (data) => {
       console.log("Viewer audio enabled event received, forwarding to room:", data.sessionId);
@@ -1999,6 +2223,11 @@ socket.on("viewer-audio-response", (data) => {
     socket.on("viewer-audio-started", (data) => 
       handleViewerAudioStarted(socket, data.sessionId, data)
     );
+
+    socket.on("viewer-audio-stop", (data) => 
+  handleStreamerStopViewerAudio(socket, data.sessionId, data.targetSocketId)
+);
+
     
     socket.on("viewer-video-started", (data) => 
       handleViewerVideoStarted(socket, data.sessionId, data)
@@ -2238,21 +2467,26 @@ const handleViewerAudioStarted = async (socket, sessionId, data) => {
     const state = roomState.get(sessionId);
     if (!state) return;
 
-    // Update participant status
+    // ✅ Update participant status
     const participant = state.participants.get(data.userId);
     if (participant) {
       participant.hasAudio = true;
+
+      // 🔴 Old event (partial update — keep for compatibility)
       io.to(sessionId).emit("participant_updated", {
         userId: data.userId,
-        updates: { hasAudio: true }
+        updates: { hasAudio: true },
       });
+
+      // 🟢 New event (full snapshot)
+      broadcastParticipantsList(sessionId);
     }
 
-    // Notify all participants
+    // 🔴 Old event (notify all participants)
     io.to(sessionId).emit("viewer-audio-started-global", {
       userId: data.userId,
       userName: data.userName || "Viewer",
-      socketId: socket.id
+      socketId: socket.id,
     });
   } catch (error) {
     console.error("Viewer audio started error:", error);
@@ -2265,21 +2499,26 @@ const handleViewerVideoStarted = async (socket, sessionId, data) => {
     const state = roomState.get(sessionId);
     if (!state) return;
 
-    // Update participant status
+    // ✅ Update participant status
     const participant = state.participants.get(data.userId);
     if (participant) {
       participant.hasVideo = true;
+
+      // 🔴 Old event (partial update — keep for compatibility)
       io.to(sessionId).emit("participant_updated", {
         userId: data.userId,
-        updates: { hasVideo: true }
+        updates: { hasVideo: true },
       });
+
+      // 🟢 New event (full snapshot)
+      broadcastParticipantsList(sessionId);
     }
 
-    // Notify all participants
+    // 🔴 Old event (notify all participants)
     io.to(sessionId).emit("viewer-video-started-global", {
       userId: data.userId,
       userName: data.userName || "Viewer",
-      socketId: socket.id
+      socketId: socket.id,
     });
   } catch (error) {
     console.error("Viewer video started error:", error);
@@ -2310,17 +2549,23 @@ const handleViewerAudioEnabled = async (socket, sessionId, data) => {
     const state = roomState.get(sessionId);
     if (!state) return;
 
-    // Update participant status
+    // ✅ Update participant status
     const participant = state.participants.get(data.userId);
     if (participant) {
       participant.hasAudio = true;
-      // Forward to all other participants in the room
+
+      // 🔴 Old event (forward to all except sender — keep for compatibility)
       socket.to(sessionId).emit("viewer-audio-enabled", data);
+
+      // 🟢 New event (full snapshot)
+      broadcastParticipantsList(sessionId);
     }
   } catch (error) {
     console.error("Viewer audio enabled error:", error);
   }
 };
+
+
 
 const handleViewerVideoEnabled = async (socket, sessionId, data) => {
   try {
@@ -2328,17 +2573,22 @@ const handleViewerVideoEnabled = async (socket, sessionId, data) => {
     const state = roomState.get(sessionId);
     if (!state) return;
 
-    // Update participant status
+    // ✅ Update participant status
     const participant = state.participants.get(data.userId);
     if (participant) {
       participant.hasVideo = true;
-      // Forward to all other participants in the room
+
+      // 🔴 Old event (forward to all except sender — keep for compatibility)
       socket.to(sessionId).emit("viewer-video-enabled", data);
+
+      // 🟢 New event (full snapshot)
+      broadcastParticipantsList(sessionId);
     }
   } catch (error) {
     console.error("Viewer video enabled error:", error);
   }
 };
+
 
 // Export functions as named exports
 export { getIO };
