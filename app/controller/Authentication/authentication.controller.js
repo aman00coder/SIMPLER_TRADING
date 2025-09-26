@@ -145,6 +145,7 @@ export const createAccount = async (req, res) => {
       return sendErrorResponse(res, errorEn.PASSWORD_NOT_MATCH, HttpStatus.BAD_REQUEST);
     }
 
+    
     const email = data.email?.toLowerCase();
 
     // ✅ Check again if user exists (race condition)
