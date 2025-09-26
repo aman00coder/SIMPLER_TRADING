@@ -146,13 +146,24 @@ export const startLiveSession = async (req, res) => {
 export const getAllLiveSessions = async (req, res) => {
   try {
     const userId = req.tokenData?.userId;
+    const userRole = req.tokenData?.role; // assume token me role bhi stored hai
+
     if (!userId) {
       return sendErrorResponse(res, "Unauthorized: userId missing", HttpStatus.UNAUTHORIZED);
     }
 
-    // ✅ filter by streamerId (only sessions created by logged in user)
+    let filter = {};
+
+    // ✅ agar streamer hai toh apne sessions hi dekhe
+    if (userRole === "STREAMER") {
+      filter.streamerId = userId;
+    } else {
+      // ✅ viewer ya user sab active sessions dekhe
+      filter.status = "ACTIVE";
+    }
+
     const liveSessions = await liveSessionModel
-      .find({ streamerId: userId })
+      .find(filter)
       .populate("streamerId", "name email role profilePic")
       .populate("participants", "name email role profilePic")
       .populate({
@@ -163,7 +174,13 @@ export const getAllLiveSessions = async (req, res) => {
         }
       });
 
-    return sendSuccessResponse(res, liveSessions, "Your live sessions fetched successfully", HttpStatus.OK);
+    return sendSuccessResponse(
+      res,
+      liveSessions,
+      userRole === "STREAMER" ? "Your live sessions fetched successfully" : "All live sessions fetched successfully",
+      HttpStatus.OK
+    );
+
   } catch (error) {
     console.error("getAllLiveSessions Error:", error.message);
     return sendErrorResponse(res, "Internal server error", HttpStatus.INTERNAL_SERVER_ERROR);
