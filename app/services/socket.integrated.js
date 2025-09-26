@@ -2873,7 +2873,7 @@ const handleViewerVideoEnabled = async (socket, sessionId, data) => {
 
 
 // Export functions as named exports
-export { getIO };
+export { getIO }; 
 
 
 
