@@ -94,6 +94,8 @@ export const verifyEmailOtp = async (req, res) => {
   }
 };
 
+
+
 // 3. Check Temp Registration Status
 export const checkTempRegistrationStatus = async (req, res) => {
   try {
