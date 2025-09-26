@@ -21,6 +21,41 @@ const generateRoomCode = () => {
 /**
  * Start Live Session
  */
+const scheduleSessionAutoEnd = (sessionId, endTime) => {
+  if (!endTime) return;
+
+  const delay = new Date(endTime).getTime() - Date.now();
+  if (delay <= 0) return;
+
+  setTimeout(async () => {
+    try {
+      const io = getIO();
+      const session = await liveSessionModel.findOne({ _id: sessionId, status: "ACTIVE" });
+      if (!session) return;
+
+      session.status = "ENDED";
+      session.endTime = new Date();
+      await session.save();
+
+      if (session.whiteboardId) {
+        await whiteBoardModel.findByIdAndUpdate(session.whiteboardId, { $set: { status: "CLOSED" } });
+      }
+
+      io.to(session.sessionId).emit("session_ended", {
+        sessionId: session.sessionId,
+        message: "Session automatically ended after scheduled endTime."
+      });
+
+      console.log(`✅ Auto-ended LiveSession: ${session.sessionId}`);
+    } catch (err) {
+      console.error("🔥 Auto-end session error:", err.message);
+    }
+  }, delay);
+};
+
+/**
+ * ✅ Start Live Session
+ */
 export const startLiveSession = async (req, res) => {
   try {
     const io = getIO(); 
@@ -84,6 +119,9 @@ export const startLiveSession = async (req, res) => {
     liveSession.whiteboardId = whiteboard._id;
     await liveSession.save();
 
+    // schedule auto end
+    scheduleSessionAutoEnd(liveSession._id, endTime);
+
     // notify all connected clients
     io.emit("session_started", {
       sessionId,
@@ -102,7 +140,35 @@ export const startLiveSession = async (req, res) => {
   }
 };
 
+/**
+ * ✅ Get All Live Sessions of Current User Only
+ */
+export const getAllLiveSessions = async (req, res) => {
+  try {
+    const userId = req.tokenData?.userId;
+    if (!userId) {
+      return sendErrorResponse(res, "Unauthorized: userId missing", HttpStatus.UNAUTHORIZED);
+    }
 
+    // ✅ filter by streamerId (only sessions created by logged in user)
+    const liveSessions = await liveSessionModel
+      .find({ streamerId: userId })
+      .populate("streamerId", "name email role profilePic")
+      .populate("participants", "name email role profilePic")
+      .populate({
+        path: "whiteboardId",
+        populate: {
+          path: "participants",
+          select: "name email role profilePic"
+        }
+      });
+
+    return sendSuccessResponse(res, liveSessions, "Your live sessions fetched successfully", HttpStatus.OK);
+  } catch (error) {
+    console.error("getAllLiveSessions Error:", error.message);
+    return sendErrorResponse(res, "Internal server error", HttpStatus.INTERNAL_SERVER_ERROR);
+  }
+};
 
 // =========================
 // Pause Live Session
@@ -319,33 +385,6 @@ export const endLiveSession = async (req, res) => {
 
 
 
-export const getAllLiveSessions = async (req, res) => {
-    try {
-        const liveSessions = await liveSessionModel
-            .find()
-            .populate("streamerId", "name email role profilePic")  // ✅ updated
-            .populate("participants", "name email role profilePic") 
-            .populate({
-                path: "whiteboardId", 
-                populate: {
-                    path: "participants",
-                    select: "name email role profilePic"
-                }
-            });
-            // .populate({
-            //     path: "chatMessages",
-            //     populate: {
-            //         path: "senderId", 
-            //         select: "name email role profilePic"
-            //     }
-            // });
-
-        return sendSuccessResponse(res, liveSessions, "Live sessions fetched successfully", HttpStatus.OK);
-    } catch (error) {
-        console.log(error.message);
-        return sendErrorResponse(res, "Internal server error", HttpStatus.INTERNAL_SERVER_ERROR);
-    }
-};
 
 
 export const getSingleLiveSession = async (req, res) => {
