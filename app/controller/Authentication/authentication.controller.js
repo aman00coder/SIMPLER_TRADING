@@ -23,7 +23,14 @@ export const sendEmailOtp = async (req, res) => {
     // Check if email already exists
     const existingUser = await authenticationModel.findOne({ email });
     if (existingUser) {
-      return sendErrorResponse(res, errorEn.USER_ALREADY_REGISTERED("user"), HttpStatus.CONFLICT);
+      // ✅ Fixed: dynamic message
+      const message = errorEn.USER_ALREADY_REGISTERED
+        ? (typeof errorEn.USER_ALREADY_REGISTERED === "function"
+            ? errorEn.USER_ALREADY_REGISTERED("user")
+            : errorEn.USER_ALREADY_REGISTERED)
+        : "User already registered";
+
+      return sendErrorResponse(res, message, HttpStatus.CONFLICT);
     }
 
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
@@ -48,9 +55,18 @@ export const sendEmailOtp = async (req, res) => {
 
   } catch (err) {
     console.error("Error in sendEmailOtp:", err);
-    return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+
+    // ✅ Catch me bhi same fix
+    const message = errorEn.INTERNAL_SERVER_ERROR
+      ? (typeof errorEn.INTERNAL_SERVER_ERROR === "function"
+          ? errorEn.INTERNAL_SERVER_ERROR()
+          : errorEn.INTERNAL_SERVER_ERROR)
+      : "Internal server error";
+
+    return sendErrorResponse(res, message, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
+
 
 // 2. Verify Email OTP
 export const verifyEmailOtp = async (req, res) => {
@@ -131,12 +147,19 @@ export const createAccount = async (req, res) => {
 
     const email = data.email?.toLowerCase();
 
-    // Check again if user exists (in case of race condition)
+    // ✅ Check again if user exists (race condition)
     const existingUser = await authenticationModel.findOne({ email });
     if (existingUser) {
-      return sendErrorResponse(res, errorEn.USER_ALREADY_REGISTERED(role), HttpStatus.CONFLICT);
+      const message = errorEn.USER_ALREADY_REGISTERED
+        ? (typeof errorEn.USER_ALREADY_REGISTERED === "function"
+            ? errorEn.USER_ALREADY_REGISTERED(role)
+            : errorEn.USER_ALREADY_REGISTERED)
+        : "User already registered";
+
+      return sendErrorResponse(res, message, HttpStatus.CONFLICT);
     }
 
+    // ✅ Hash password
     const hashedPassword = await genPassword(password);
 
     const savedUser = await authenticationModel.create({
@@ -147,17 +170,36 @@ export const createAccount = async (req, res) => {
       isEmailVerified: true
     });
 
+    // ✅ Remove temp store
     tempStore.delete(secretId);
 
-    return sendSuccessResponse(res, {
-      userId: savedUser._id,
-      isEmailVerified: true
-    }, successEn.REGISTERED(role), HttpStatus.OK);
+    return sendSuccessResponse(
+      res,
+      {
+        userId: savedUser._id,
+        isEmailVerified: true
+      },
+      successEn.REGISTERED
+        ? (typeof successEn.REGISTERED === "function"
+            ? successEn.REGISTERED(role)
+            : successEn.REGISTERED)
+        : "Registered successfully",
+      HttpStatus.OK
+    );
 
   } catch (err) {
-    return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+    console.error("Error in createAccount:", err);
+
+    const message = errorEn.INTERNAL_SERVER_ERROR
+      ? (typeof errorEn.INTERNAL_SERVER_ERROR === "function"
+          ? errorEn.INTERNAL_SERVER_ERROR()
+          : errorEn.INTERNAL_SERVER_ERROR)
+      : "Internal server error";
+
+    return sendErrorResponse(res, message, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
+
 
 // 5. Login
 export const login = async (req, res) => {
