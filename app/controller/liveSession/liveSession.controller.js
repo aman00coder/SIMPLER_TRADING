@@ -18,12 +18,9 @@ const generateRoomCode = () => {
   return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 };
 
-/**
- * Start Live Session
- */
+// 🔹 Schedule session auto-end
 const scheduleSessionAutoEnd = (sessionId, endTime) => {
   if (!endTime) return;
-
   const delay = new Date(endTime).getTime() - Date.now();
   if (delay <= 0) return;
 
@@ -33,14 +30,17 @@ const scheduleSessionAutoEnd = (sessionId, endTime) => {
       const session = await liveSessionModel.findOne({ _id: sessionId, status: "ACTIVE" });
       if (!session) return;
 
+      // ✅ Update session status and endTime
       session.status = "ENDED";
       session.endTime = new Date();
       await session.save();
 
+      // ✅ Close whiteboard if exists
       if (session.whiteboardId) {
         await whiteBoardModel.findByIdAndUpdate(session.whiteboardId, { $set: { status: "CLOSED" } });
       }
 
+      // ✅ Notify clients
       io.to(session.sessionId).emit("session_ended", {
         sessionId: session.sessionId,
         message: "Session automatically ended after scheduled endTime."
@@ -53,9 +53,7 @@ const scheduleSessionAutoEnd = (sessionId, endTime) => {
   }, delay);
 };
 
-/**
- * ✅ Start Live Session
- */
+// ✅ Start Live Session
 export const startLiveSession = async (req, res) => {
   try {
     const io = getIO(); 
@@ -66,16 +64,12 @@ export const startLiveSession = async (req, res) => {
       return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
     }
 
-    // generate unique room code
     const roomCode = generateRoomCode();
-
-    // check if already an active session exists with same code
     const existingSession = await liveSessionModel.findOne({ roomCode, status: "ACTIVE" });
     if (existingSession) {
       return sendErrorResponse(res, errorEn.LIVE_SESSION_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
     }
 
-    // create session
     const sessionId = uuidv4();
     const liveSession = await liveSessionModel.create({
       streamerId: mentorId,
@@ -96,7 +90,6 @@ export const startLiveSession = async (req, res) => {
       totalActiveDuration: 0
     });
 
-    // create whiteboard
     const whiteboard = await whiteBoardModel.create({
       whiteboardId: uuidv4(),
       title,
@@ -115,14 +108,12 @@ export const startLiveSession = async (req, res) => {
       ]
     });
 
-    // link whiteboard to session
     liveSession.whiteboardId = whiteboard._id;
     await liveSession.save();
 
-    // schedule auto end
+    // 🔹 Schedule auto-end
     scheduleSessionAutoEnd(liveSession._id, endTime);
 
-    // notify all connected clients
     io.emit("session_started", {
       sessionId,
       mentorId,
