@@ -67,8 +67,6 @@ export const sendEmailOtp = async (req, res) => {
   }
 };
 
-
-// 2. Verify Email OTP
 export const verifyEmailOtp = async (req, res) => {
   try {
     const { secretId, otp } = req.body;
