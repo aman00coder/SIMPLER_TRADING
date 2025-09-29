@@ -860,11 +860,7 @@ const handleViewerScreenShareAudio = async (socket, sessionId, transportId, rtpP
     callback({ error: error.message });
   }
 };
-const handleViewerScreenShareStop = async (
-  socket,
-  sessionId,
-  userId = null
-) => {
+const handleViewerScreenShareStop = async (socket, sessionId, userId = null) => {
   try {
     console.log("Viewer screen share stop from:", socket.id);
     const state = roomState.get(sessionId);
@@ -880,13 +876,11 @@ const handleViewerScreenShareStop = async (
     if (participant) {
       participant.isScreenSharing = false;
 
-      // 🔴 Old event (partial update — keep for compatibility)
       io.to(sessionId).emit("participant_updated", {
         userId: targetUserId,
         updates: { isScreenSharing: false },
       });
 
-      // 🟢 New event (full snapshot)
       broadcastParticipantsList(sessionId);
     }
 
@@ -899,17 +893,17 @@ const handleViewerScreenShareStop = async (
       ) {
         try {
           producer.close();
-          state.producers.delete(producerId);
-          console.log(`Screen share producer ${producerId} closed`);
         } catch (e) {
           console.warn("Error closing screen share producer:", e);
         }
+        state.producers.delete(producerId);
       }
     }
 
-    // 🔴 Old event (notify all participants)
+    // ✅ CORRECT: No flag for self-stop
     io.to(sessionId).emit("screen-share-stopped-by-viewer", {
       userId: targetUserId,
+      stoppedByStreamer: false  // 👈 YAHA BHI FLAG (false)
     });
 
     console.log(`Screen share stopped for user: ${targetUserId}`);
@@ -925,7 +919,6 @@ const handleStreamerStopScreenShare = async (socket, sessionId, targetUserId) =>
     const state = roomState.get(sessionId);
     if (!state) return;
 
-    // ❌ yeh missing tha
     state.activeScreenShares.delete(targetUserId);
 
     // ✅ Update participant status
@@ -933,13 +926,11 @@ const handleStreamerStopScreenShare = async (socket, sessionId, targetUserId) =>
     if (participant) {
       participant.isScreenSharing = false;
 
-      // 🔴 Old event (partial update — keep for compatibility)
       io.to(sessionId).emit("participant_updated", {
         userId: targetUserId,
         updates: { isScreenSharing: false },
       });
 
-      // 🟢 New event (full snapshot)
       broadcastParticipantsList(sessionId);
     }
 
@@ -966,9 +957,10 @@ const handleStreamerStopScreenShare = async (socket, sessionId, targetUserId) =>
       });
     }
 
-    // 🔴 Old event (notify all participants)
+    // ✅ CORRECT: Add stoppedByStreamer flag
     io.to(sessionId).emit("screen-share-stopped-by-viewer", {
       userId: targetUserId,
+      stoppedByStreamer: true  // 👈 YAHAN FLAG ADD KARO
     });
 
     console.log(`✅ Streamer forced stop of screen share for user ${targetUserId}`);
