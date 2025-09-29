@@ -63,14 +63,30 @@ app.use(
     resave: false,
     saveUninitialized: true,
     cookie: {
-      secure: process.env.NODE_ENV === "production", // ✅ secure cookie only in prod
+      secure: process.env.NODE_ENV === "production",
     },
   })
 );
 
+// ✅ Root route
 app.get("/", (req, res) => {
   res.json({
-    message: "🚀✨ Server is running successfully 🌟",
+    status: "success",
+    message: "🚀✨ Server is running successfully🌟",
+    app: "SIMPLER_TRADING",
+    version: "1.0.0",
+    environment: process.env.NODE_ENV,
+    port: process.env.PORT,
+    serverTime: new Date().toISOString(),
+    note: "API is up and running. Use the documented endpoints to interact."
+  });
+});
+
+// ✅ Lander route for Nginx /lander
+app.get("/lander", (req, res) => {
+  res.json({
+    status: "success",
+    message: "Backend /lander route is working!",
   });
 });
 
@@ -82,7 +98,6 @@ const PORT = process.env.PORT || 9090;
   try {
     const worker = await createMediasoupWorker();
 
-    // ✅ FIX: Pass worker into setupIntegratedSocket and await it
     const io = await setupIntegratedSocket(httpServer, worker);
     app.set("io", io);
 
@@ -90,7 +105,7 @@ const PORT = process.env.PORT || 9090;
       console.log(`🚀✨ Server is running on port ${PORT} 🌟`);
     });
 
-    // ✅ Graceful shutdown
+    // 🔹 Graceful shutdown
     const shutdown = async () => {
       console.log("Shutting down...");
       try {

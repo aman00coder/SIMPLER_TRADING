@@ -6,8 +6,8 @@ import * as authenticationController from '../../controller/Authentication/authe
 // authentication routes
 router.route("/sendEmailOtp").post(authenticationController.sendEmailOtp);
 router.route("/verifyEmailOtp").post(authenticationController.verifyEmailOtp);  
-router.route("/sendPhoneOtp").post(authenticationController.sendPhoneOtp);  
-router.route("/verifyPhoneOtp").post(authenticationController.verifyPhoneOtp);  
+// router.route("/sendPhoneOtp").post(authenticationController.sendPhoneOtp);  
+// router.route("/verifyPhoneOtp").post(authenticationController.verifyPhoneOtp);  
 router.route("/checkTempRegistrationStatus").post(authenticationController.checkTempRegistrationStatus);  
 router.route("/createAccount").post(authenticationController.createAccount);  
 router.route("/login").post(authenticationController.login);
