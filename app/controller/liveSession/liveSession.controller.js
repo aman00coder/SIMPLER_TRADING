@@ -139,19 +139,22 @@ export const startLiveSession = async (req, res) => {
 export const getAllLiveSessions = async (req, res) => {
   try {
     const userId = req.tokenData?.userId;
-    const userRole = req.tokenData?.role; // assume token me role bhi stored hai
+    const userRole = req.tokenData?.role;
 
-    if (!userId) {
-      return sendErrorResponse(res, "Unauthorized: userId missing", HttpStatus.UNAUTHORIZED);
+    if (!userId || !userRole) {
+      return sendErrorResponse(res, "Unauthorized: missing credentials", HttpStatus.UNAUTHORIZED);
     }
 
     let filter = {};
 
-    // ✅ agar streamer hai toh apne sessions hi dekhe
-    if (userRole === "STREAMER") {
+    if (userRole === ROLE_MAP.STREAMER) {
+      // ✅ Streamer should only see their own sessions
       filter.streamerId = userId;
+    } else if (userRole === ROLE_MAP.VIEWER) {
+      // ✅ Viewer sees all active sessions
+      filter.status = "ACTIVE";
     } else {
-      // ✅ viewer ya user sab active sessions dekhe
+      // Admin ya koi aur role ke liye bhi agar chahiye toh handle kar sakte
       filter.status = "ACTIVE";
     }
 
@@ -170,7 +173,9 @@ export const getAllLiveSessions = async (req, res) => {
     return sendSuccessResponse(
       res,
       liveSessions,
-      userRole === "STREAMER" ? "Your live sessions fetched successfully" : "All live sessions fetched successfully",
+      userRole === ROLE_MAP.STREAMER
+        ? "Your live sessions fetched successfully"
+        : "All live sessions fetched successfully",
       HttpStatus.OK
     );
 
@@ -179,6 +184,7 @@ export const getAllLiveSessions = async (req, res) => {
     return sendErrorResponse(res, "Internal server error", HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
+
 
 // =========================
 // Pause Live Session
