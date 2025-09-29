@@ -15,12 +15,13 @@ import { ROLE_MAP } from "../../constant/role.js";
  * Start Live Session
  */
 // 🔹 Helper: secure random alphanumeric roomCode
+/** Helper: Generate secure 6-char roomCode */
 const generateRoomCode = () => {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 };
 
-// 🔹 Schedule session auto-end
+/** Schedule session auto-end */
 const scheduleSessionAutoEnd = (sessionId, endTime) => {
   if (!endTime) return;
   const delay = new Date(endTime).getTime() - Date.now();
@@ -32,17 +33,14 @@ const scheduleSessionAutoEnd = (sessionId, endTime) => {
       const session = await liveSessionModel.findOne({ _id: sessionId, status: "ACTIVE" });
       if (!session) return;
 
-      // ✅ Update session status and endTime
       session.status = "ENDED";
       session.endTime = new Date();
       await session.save();
 
-      // ✅ Close whiteboard if exists
       if (session.whiteboardId) {
         await whiteBoardModel.findByIdAndUpdate(session.whiteboardId, { $set: { status: "CLOSED" } });
       }
 
-      // ✅ Notify clients
       io.to(session.sessionId).emit("session_ended", {
         sessionId: session.sessionId,
         message: "Session automatically ended after scheduled endTime."
@@ -55,7 +53,7 @@ const scheduleSessionAutoEnd = (sessionId, endTime) => {
   }, delay);
 };
 
-// ✅ Start Live Session
+/** Start Live Session */
 export const startLiveSession = async (req, res) => {
   try {
     const io = getIO(); 
@@ -69,7 +67,7 @@ export const startLiveSession = async (req, res) => {
     const roomCode = generateRoomCode();
     const existingSession = await liveSessionModel.findOne({ roomCode, status: "ACTIVE" });
     if (existingSession) {
-      return sendErrorResponse(res, errorEn.LIVE_SESSION_ALREADY_EXISTS, HttpStatus.BAD_REQUEST);
+      return sendErrorResponse(res, errorEn.LIVE_SESSION_ALREADY_EXISTS, HttpStatus.CONFLICT);
     }
 
     const sessionId = uuidv4();
@@ -79,13 +77,13 @@ export const startLiveSession = async (req, res) => {
       sessionId,
       roomCode,
       title,
-      description,
+      description: description || "",
       actualStartTime: new Date(),
       endTime,
       participants: [],
       allowedUsers: [],
       chatMessages: [],
-      recordingUrl: "",
+      recordingUrl: [],
       maxParticipants: maxParticipants || 100,
       isPrivate: isPrivate || false,
       status: "ACTIVE",
@@ -99,21 +97,18 @@ export const startLiveSession = async (req, res) => {
       createdBy: mentorId,
       createdByRole: ROLE_MAP.STREAMER,
       liveSessionId: liveSession._id,
-      participants: [
-        {
-          user: mentorId,
-          role: "owner",
-          joinedAt: new Date(),
-          lastActive: new Date(),
-          cursorPosition: {}
-        }
-      ]
+      participants: [{
+        user: mentorId,
+        role: "owner",
+        joinedAt: new Date(),
+        lastActive: new Date(),
+        cursorPosition: {}
+      }]
     });
 
     liveSession.whiteboardId = whiteboard._id;
     await liveSession.save();
 
-    // 🔹 Schedule auto-end
     scheduleSessionAutoEnd(liveSession._id, endTime);
 
     io.emit("session_started", {
@@ -137,112 +132,100 @@ export const startLiveSession = async (req, res) => {
  * ✅ Get All Live Sessions of Current User Only
  */
 export const getAllLiveSessions = async (req, res) => {
-  try {
-    const userId = req.tokenData?.userId;
-    const userRole = req.tokenData?.role;
+    try {
+        const userId = req.tokenData?.userId;
+        const userRole = req.tokenData?.role;
 
-    if (!userId || !userRole) {
-      return sendErrorResponse(res, "Unauthorized: missing credentials", HttpStatus.UNAUTHORIZED);
-    }
-
-    let filter = {};
-
-    if (userRole === ROLE_MAP.STREAMER) {
-      // ✅ Streamer should only see their own sessions
-      filter.streamerId = userId;
-    } else if (userRole === ROLE_MAP.VIEWER) {
-      // ✅ Viewer sees all active sessions
-      filter.status = "ACTIVE";
-    } else {
-      // Admin ya koi aur role ke liye bhi agar chahiye toh handle kar sakte
-      filter.status = "ACTIVE";
-    }
-
-    const liveSessions = await liveSessionModel
-      .find(filter)
-      .populate("streamerId", "name email role profilePic")
-      .populate("participants", "name email role profilePic")
-      .populate({
-        path: "whiteboardId",
-        populate: {
-          path: "participants",
-          select: "name email role profilePic"
+        if (!userId || !userRole) {
+            return sendErrorResponse(res, "Unauthorized: missing credentials", 401);
         }
-      });
 
-    return sendSuccessResponse(
-      res,
-      liveSessions,
-      userRole === ROLE_MAP.STREAMER
-        ? "Your live sessions fetched successfully"
-        : "All live sessions fetched successfully",
-      HttpStatus.OK
-    );
+        let filter = {};
+        if (userRole === ROLE_MAP.STREAMER) filter.streamerId = userId;
+        else filter.status = "ACTIVE";
 
-  } catch (error) {
-    console.error("getAllLiveSessions Error:", error.message);
-    return sendErrorResponse(res, "Internal server error", HttpStatus.INTERNAL_SERVER_ERROR);
-  }
+        const liveSessions = await liveSessionModel
+            .find(filter)
+            .populate("streamerId", "name email role profilePic")
+            .populate("participants", "name email role profilePic")
+            .populate({
+                path: "whiteboardId",
+                populate: { path: "participants", select: "name email role profilePic" }
+            });
+
+        // 🔹 Expired sessions filter
+        const sessionsFiltered = liveSessions.map(session => {
+            if (session.status === "ENDED" || (session.endTime && new Date() > new Date(session.endTime))) {
+                return { ...session.toObject(), expired: true };
+            }
+            return session;
+        });
+
+        return sendSuccessResponse(
+            res,
+            sessionsFiltered,
+            userRole === ROLE_MAP.STREAMER ? "Your live sessions fetched successfully" : "All live sessions fetched successfully",
+            200
+        );
+
+    } catch (error) {
+        console.error("getAllLiveSessions Error:", error.message);
+        return sendErrorResponse(res, "Internal server error", 500);
+    }
 };
 
 
-// =========================
-// Pause Live Session
-// =========================
+
+/** Pause Live Session */
 export const pauseLiveSession = async (req, res) => {
   try {
     const io = getIO();
     const { sessionId } = req.params;
     const mentorId = req.tokenData?.userId;
 
+    if (!sessionId) return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
+
     const session = await liveSessionModel.findOne({ sessionId });
     if (!session) return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
+    if (session.streamerId.toString() !== mentorId) return sendErrorResponse(res, errorEn.UNAUTHORIZED, HttpStatus.UNAUTHORIZED);
 
-    if (session.streamerId.toString() !== mentorId)
-      return sendErrorResponse(res, "Unauthorized to pause session", HttpStatus.UNAUTHORIZED);
-
-    // Update active duration
-    if (session.actualStartTime) {
-      session.totalActiveDuration += Math.floor((Date.now() - session.actualStartTime.getTime()) / 1000);
-    }
-
+    if (session.actualStartTime) session.totalActiveDuration += Math.floor((Date.now() - session.actualStartTime.getTime()) / 1000);
     session.status = "PAUSED";
     await session.save();
 
     io.to(sessionId).emit("session_paused", { sessionId });
-
     return sendSuccessResponse(res, session, "Live session paused successfully", HttpStatus.OK);
   } catch (error) {
-    console.error(error.message);
+    console.error("pauseLiveSession Error:", error.message);
     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
 
 
+
 // =========================
 // Resume Live Session
-// =========================
+
 export const resumeLiveSession = async (req, res) => {
   try {
     const io = getIO();
     const { sessionId } = req.params;
     const mentorId = req.tokenData?.userId;
 
+    if (!sessionId) return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
+
     const session = await liveSessionModel.findOne({ sessionId });
     if (!session) return sendErrorResponse(res, errorEn.LIVE_SESSION_NOT_FOUND, HttpStatus.NOT_FOUND);
-
-    if (session.streamerId.toString() !== mentorId)
-      return sendErrorResponse(res, "Unauthorized to resume session", HttpStatus.UNAUTHORIZED);
+    if (session.streamerId.toString() !== mentorId) return sendErrorResponse(res, errorEn.UNAUTHORIZED, HttpStatus.UNAUTHORIZED);
 
     session.status = "ACTIVE";
-    session.actualStartTime = new Date(); // reset
+    session.actualStartTime = new Date();
     await session.save();
 
     io.to(sessionId).emit("session_resumed", { sessionId });
-
     return sendSuccessResponse(res, session, "Live session resumed successfully", HttpStatus.OK);
   } catch (error) {
-    console.error(error.message);
+    console.error("resumeLiveSession Error:", error.message);
     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
@@ -250,73 +233,55 @@ export const resumeLiveSession = async (req, res) => {
 // =========================
 // Save Whiteboard Recording
 // =========================
+/** Save Whiteboard Recording */
 export const saveWhiteboardRecording = async (req, res) => {
-    try {
-        const { whiteboardId } = req.params;       // ✅ route param match
-        const uploadedBy = req.tokenData?.userId;  // ✅ token se userId
+  try {
+    const { whiteboardId } = req.params;
+    const uploadedBy = req.tokenData?.userId;
 
-        if (!whiteboardId) 
-            return sendErrorResponse(res, "All fields required", 400);
+    if (!whiteboardId) return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
 
-        const whiteboard = await whiteBoardModel.findById(whiteboardId);
-        if (!whiteboard) 
-            return sendErrorResponse(res, "Whiteboard not found", 404);
+    const whiteboard = await whiteBoardModel.findById(whiteboardId);
+    if (!whiteboard) return sendErrorResponse(res, errorEn.WHITEBOARD_NOT_FOUND, HttpStatus.NOT_FOUND);
 
-        // ========================
-        // Files from body (JSON array)
-        // ========================
-        const safeJsonParse = (str, defaultVal) => {
-            try { return JSON.parse(str); } catch { return defaultVal; }
-        };
-        const filesFromBody = safeJsonParse(req.body.files, []);
+    const safeJsonParse = (str, defaultVal) => {
+      try { return JSON.parse(str); } catch { return defaultVal; }
+    };
+    const filesFromBody = safeJsonParse(req.body.files, []);
 
-        // ========================
-        // Files from multer upload
-        // ========================
-        const buildUploadedFiles = (fileEntries = [], uploaderId) => {
-            if (!Array.isArray(fileEntries) || fileEntries.length === 0) return [];
-            return fileEntries.map((f) => ({
-                fileName: f.originalname,
-                fileUrl: f.location || f.path,
-                fileType: f.mimetype,
-                uploadedBy: uploaderId,
-                uploadedAt: new Date(),
-            }));
-        };
+    const buildUploadedFiles = (fileEntries = [], uploaderId) => {
+      if (!Array.isArray(fileEntries) || fileEntries.length === 0) return [];
+      return fileEntries.map(f => ({
+        fileName: f.originalname,
+        fileUrl: f.location || f.path,
+        fileType: f.mimetype,
+        uploadedBy: uploaderId,
+        uploadedAt: new Date(),
+      }));
+    };
 
-        const uploadedFiles = [
-            ...buildUploadedFiles(req.files?.recordingUrl, uploadedBy),
-            ...buildUploadedFiles(req.files?.file, uploadedBy)
-        ];
+    const uploadedFiles = [
+      ...buildUploadedFiles(req.files?.recordingUrl, uploadedBy),
+      ...buildUploadedFiles(req.files?.file, uploadedBy)
+    ];
 
-        // ========================
-        // Merge both
-        // ========================
-        const mergedFiles = Array.isArray(filesFromBody) ? [...filesFromBody, ...uploadedFiles] : uploadedFiles;
+    const mergedFiles = Array.isArray(filesFromBody) ? [...filesFromBody, ...uploadedFiles] : uploadedFiles;
+    if (mergedFiles.length === 0) return sendErrorResponse(res, errorEn.NO_FILES, HttpStatus.BAD_REQUEST);
 
-        if (mergedFiles.length === 0) 
-            return sendErrorResponse(res, "No files to save", 400);
+    mergedFiles.forEach(file => whiteboard.recordingUrl.push({ 
+      fileName: file.fileName || "unknown",
+      fileUrl: file.fileUrl,
+      fileType: file.fileType || "unknown",
+      uploadedBy
+    }));
 
-        // ========================
-        // Push to whiteboard recordingUrl
-        // ========================
-        mergedFiles.forEach(file => {
-            whiteboard.recordingUrl.push({ 
-                fileName: file.fileName || "unknown",
-                fileUrl: file.fileUrl,
-                fileType: file.fileType || "unknown",
-                uploadedBy
-            });
-        });
+    await whiteboard.save();
+    return sendSuccessResponse(res, whiteboard, successEn.WHITEBOARD_RECORDING_SAVED, HttpStatus.OK);
 
-        await whiteboard.save();
-
-        return sendSuccessResponse(res, whiteboard, "Whiteboard recording saved", 200);
-
-    } catch (error) {
-        console.error("🔥 saveWhiteboardRecording error:", error.message);
-        return sendErrorResponse(res, "Internal server error", 500);
-    }
+  } catch (error) {
+    console.error("saveWhiteboardRecording error:", error.message);
+    return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+  }
 };
 
 
@@ -411,27 +376,26 @@ export const getSingleLiveSession = async (req, res) => {
         }
 
         const liveSession = await liveSessionModel
-            .findOne({ sessionId }) // ✅ fixed here
+            .findOne({ sessionId })
             .populate("streamerId", "name email role profilePic")
             .populate("participants", "name email role profilePic")
             .populate("allowedUsers", "name email role profilePic")
             .populate({
                 path: "whiteboardId",
-                populate: {
-                    path: "participants",
-                    select: "name email role profilePic"
-                }
+                populate: { path: "participants", select: "name email role profilePic" }
             })
             .populate({
                 path: "chatMessages",
-                populate: {
-                    path: "senderId",
-                    select: "name email role profilePic"
-                }
+                populate: { path: "senderId", select: "name email role profilePic" }
             });
 
         if (!liveSession) {
             return sendErrorResponse(res, "Live session not found", 404);
+        }
+
+        // 🔹 Session expired check
+        if (liveSession.status === "ENDED" || (liveSession.endTime && new Date() > new Date(liveSession.endTime))) {
+            return sendErrorResponse(res, "This session has expired", 410); // 410 = Gone
         }
 
         return sendSuccessResponse(res, liveSession, "Live session fetched successfully", 200);
@@ -441,6 +405,7 @@ export const getSingleLiveSession = async (req, res) => {
         return sendErrorResponse(res, "Internal server error", 500);
     }
 };
+
 
 
 
