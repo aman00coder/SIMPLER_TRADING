@@ -11,6 +11,7 @@ import { ROLE_MAP } from "../../constant/role.js";
 
 
 
+
 /**
  * Start Live Session
  */
@@ -83,7 +84,7 @@ export const startLiveSession = async (req, res) => {
       participants: [],
       allowedUsers: [],
       chatMessages: [],
-      recordingUrl: [],
+      recordingUrl: JSON.stringify([]), // 🔹 fixed: store as string
       maxParticipants: maxParticipants || 100,
       isPrivate: isPrivate || false,
       status: "ACTIVE",
@@ -127,6 +128,7 @@ export const startLiveSession = async (req, res) => {
     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
+
 
 /**
  * ✅ Get All Live Sessions of Current User Only
