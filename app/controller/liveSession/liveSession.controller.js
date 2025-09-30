@@ -9,9 +9,6 @@ import { errorEn, successEn } from "../../responses/message.js";
 import { getIO } from "../../services/socket.integrated.js"; 
 import { ROLE_MAP } from "../../constant/role.js";
 
-
-
-
 /**
  * Start Live Session
  */
@@ -129,7 +126,6 @@ export const startLiveSession = async (req, res) => {
   }
 };
 
-
 /**
  * ✅ Get All Live Sessions of Current User Only
  */
@@ -177,7 +173,6 @@ export const getAllLiveSessions = async (req, res) => {
 };
 
 
-
 /** Pause Live Session */
 export const pauseLiveSession = async (req, res) => {
   try {
@@ -202,8 +197,6 @@ export const pauseLiveSession = async (req, res) => {
     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
-
-
 
 // =========================
 // Resume Live Session
@@ -286,8 +279,6 @@ export const saveWhiteboardRecording = async (req, res) => {
   }
 };
 
-
-
 // =========================
 // Get Session Analytics
 // =========================
@@ -310,7 +301,6 @@ export const getSessionAnalytics = async (req, res) => {
         return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 };
-
 
 
 export const endLiveSession = async (req, res) => {
@@ -367,9 +357,6 @@ export const endLiveSession = async (req, res) => {
 };
 
 
-
-
-
 export const getSingleLiveSession = async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -407,8 +394,6 @@ export const getSingleLiveSession = async (req, res) => {
         return sendErrorResponse(res, "Internal server error", 500);
     }
 };
-
-
 
 
 export const updateLiveSession = async (req, res) => {

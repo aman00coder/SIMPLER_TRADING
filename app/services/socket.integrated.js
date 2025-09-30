@@ -587,6 +587,49 @@ const handleStreamerStopViewerAudio = async (socket, sessionId, targetSocketId) 
   }
 };
 
+const handleStreamerScreenShareStop = async (socket, sessionId) => {
+  try {
+    console.log("🎥 Streamer stopping own screen share:", socket.id);
+    const state = roomState.get(sessionId);
+    if (!state) return;
+
+    // 🔴 Find and close all screen producers from this streamer
+    for (const [producerId, producer] of state.producers) {
+      if (
+        producer.appData?.socketId === socket.id &&
+        producer.appData?.source === "screen"
+      ) {
+        try {
+          producer.close();
+        } catch (e) {
+          console.warn("Error closing streamer screen producer:", e);
+        }
+        state.producers.delete(producerId);
+        console.log(`✅ Streamer screen producer ${producerId} closed`);
+      }
+    }
+
+    // 🔹 Update participant flag
+    const participant = state.participants.get(socket.data.userId);
+    if (participant) {
+      participant.isScreenSharing = false;
+      io.to(sessionId).emit("participant_updated", {
+        userId: socket.data.userId,
+        updates: { isScreenSharing: false },
+      });
+      broadcastParticipantsList(sessionId);
+    }
+
+    // 🔹 Notify all viewers
+    io.to(sessionId).emit("screen-share-stop", {
+      userId: socket.data.userId,
+      stoppedByStreamer: true,
+    });
+
+  } catch (error) {
+    console.error("Streamer screen share stop error:", error);
+  }
+};
 
 
 
@@ -2451,6 +2494,11 @@ socket.on("viewer-video-response", (data) => {
   handleStreamerStopViewerAudio(socket, data.sessionId, data.targetSocketId)
 );
 
+socket.on("streamer-screen-share-stop", (data) => 
+  handleStreamerScreenShareStop(socket, data.sessionId)
+);
+
+
 
     
     socket.on("viewer-video-started", (data) => 
@@ -2461,9 +2509,27 @@ socket.on("viewer-video-response", (data) => {
       handleScreenShareStartedByViewer(socket, data.sessionId, data)
     );
     
-    socket.on("screen-share-stopped-by-viewer", (data) => 
-      handleViewerScreenShareStop(socket, data.sessionId, data.userId)
-    );
+  
+    // Server side
+socket.on("screen-share-stop", async ({ sessionId, userId }) => {
+  const state = roomState.get(sessionId);
+  if (!state) return;
+
+  for (const [producerId, producer] of state.producers) {
+    if (producer.appData?.userId === userId && producer.appData?.source === "screen") {
+      try {
+        producer.close();
+      } catch (e) {
+        console.warn("Error closing screen producer", e);
+      }
+      state.producers.delete(producerId);
+      console.log(`✅ Screen producer closed for user ${userId}`);
+    }
+  }
+
+  io.to(sessionId).emit("screen-share-stop", { userId, byStreamer: true });
+});
+
     
     socket.on("viewer-audio-enabled", (data) => 
       handleViewerAudioEnabled(socket, data.sessionId, data)
