@@ -526,6 +526,59 @@ const handleStreamerStopViewerVideo = async (socket, sessionId, targetSocketId) 
     console.error("Streamer stop viewer video error:", error);
   }
 };
+// ✅ ADD THIS NEW HANDLER FUNCTION (global functions section में)
+const handleScreenShareStoppedByViewer = async (socket, data) => {
+  try {
+    const { sessionId, userId } = data;
+    console.log("🛑 Viewer stopped screen share:", userId);
+    
+    const state = roomState.get(sessionId);
+    if (!state) return;
+
+    // Clean up from active screen shares
+    state.activeScreenShares.delete(userId);
+    
+    // Clean up screen share producers
+    for (const [producerId, producer] of state.producers) {
+      if (producer.appData?.userId === userId && 
+          (producer.appData?.source === 'viewer-screen' || 
+           producer.appData?.source === 'viewer-screen-audio')) {
+        try {
+          producer.close();
+        } catch (e) {
+          console.warn("Error closing screen share producer:", e);
+        }
+        state.producers.delete(producerId);
+        console.log(`✅ Screen share producer ${producerId} closed`);
+      }
+    }
+
+    // Update participant status
+    const participant = state.participants.get(userId);
+    if (participant) {
+      participant.isScreenSharing = false;
+      
+      // Notify all participants about status change
+      io.to(sessionId).emit("participant_updated", {
+        userId: userId,
+        updates: { isScreenSharing: false }
+      });
+      
+      // Broadcast updated participants list
+      broadcastParticipantsList(sessionId);
+    }
+
+    // ✅ IMPORTANT: Notify everyone including streamer
+    io.to(sessionId).emit("screen-share-stopped-by-viewer", {
+      userId: userId,
+      stoppedByViewer: true
+    });
+
+    console.log(`✅ Viewer screen share cleaned up for user: ${userId}`);
+  } catch (error) {
+    console.error("handleScreenShareStoppedByViewer error:", error);
+  }
+};
 
 const handleStreamerStopViewerAudio = async (socket, sessionId, targetSocketId) => {
   try {
@@ -903,6 +956,9 @@ const handleViewerScreenShareAudio = async (socket, sessionId, transportId, rtpP
     callback({ error: error.message });
   }
 };
+
+
+// Server mein yeh handler update karo
 const handleViewerScreenShareStop = async (socket, sessionId, userId = null) => {
   try {
     console.log("Viewer screen share stop from:", socket.id);
@@ -912,18 +968,21 @@ const handleViewerScreenShareStop = async (socket, sessionId, userId = null) => 
     const targetUserId = userId || socket.data?.userId;
     if (!targetUserId) return;
 
+    // Clean up from active screen shares
     state.activeScreenShares.delete(targetUserId);
 
-    // ✅ Update participant status
+    // ✅ Update participant status for ALL participants
     const participant = state.participants.get(targetUserId);
     if (participant) {
       participant.isScreenSharing = false;
 
+      // Notify ALL participants about status change
       io.to(sessionId).emit("participant_updated", {
         userId: targetUserId,
-        updates: { isScreenSharing: false },
+        updates: { isScreenSharing: false }
       });
-
+      
+      // Broadcast updated participants list to ALL
       broadcastParticipantsList(sessionId);
     }
 
@@ -943,19 +1002,19 @@ const handleViewerScreenShareStop = async (socket, sessionId, userId = null) => 
       }
     }
 
-    // ✅ CORRECT: No flag for self-stop
+    // ✅ IMPORTANT: Notify ALL participants including other viewers
     io.to(sessionId).emit("screen-share-stopped-by-viewer", {
       userId: targetUserId,
-      stoppedByStreamer: false  // 👈 YAHA BHI FLAG (false)
+      stoppedByStreamer: false,
+      // Add source to identify it's a viewer screen share
+      source: "viewer-screen"
     });
 
-    console.log(`Screen share stopped for user: ${targetUserId}`);
+    console.log(`Screen share stopped for user: ${targetUserId}, notified all participants`);
   } catch (error) {
     console.error("Viewer screen share stop error:", error);
   }
 };
-
-
 const handleStreamerStopScreenShare = async (socket, sessionId, targetUserId) => {
   try {
     console.log("Streamer stopping screen share for user:", targetUserId);
@@ -2508,6 +2567,10 @@ socket.on("streamer-screen-share-stop", (data) =>
     socket.on("screen-share-started-by-viewer", (data) => 
       handleScreenShareStartedByViewer(socket, data.sessionId, data)
     );
+
+    socket.on("screen-share-stopped-by-viewer", (data) => 
+  handleScreenShareStoppedByViewer(socket, data)
+);
     
   
     // Server side
