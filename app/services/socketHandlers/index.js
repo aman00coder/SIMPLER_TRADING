@@ -6,7 +6,7 @@ import { consumerHandlers } from "./consumer.handlers.js";
 import { screenShareHandlers } from "./screenShare.handlers.js";
 import { participantHandlers } from "./participant.handlers.js";
 import { whiteboardHandlers } from "./whiteboard.handlers.js";
-// import { webrtcHandlers } from "./webrtc.handlers.js";
+import { webrtcHandlers } from "./webrtc.handlers.js";
 import { permissionHandlers } from "./permission.handlers.js";
 import { cleanupSocketFromRoom } from "../socketUtils/general.utils.js";
 
