@@ -1,47 +1,33 @@
-// export class RoomStateManager {
-//   constructor() {
-//     this.rooms = new Map();
-//   }
+// services/socketState/roomState.js
+export const roomState = new Map();
 
-//   getRoom(sessionId) {
-//     return this.rooms.get(sessionId);
-//   }
-
-//   createRoom(sessionId, data = {}) {
-//     const defaultRoom = {
-//       whiteboardId: null,
-//       createdBy: null,
-//       streamerSocketId: null,
-//       viewers: new Set(),
-//       sockets: new Map(),
-//       pendingOps: [],
-//       flushTimer: null,
-//       router: null,
-//       transports: new Map(),
-//       producers: new Map(),
-//       consumers: new Map(),
-//       ...data
-//     };
-    
-//     this.rooms.set(sessionId, defaultRoom);
-//     return defaultRoom;
-//   }
-
-//   ensureRoom(sessionId, data = {}) {
-//     if (!this.rooms.has(sessionId)) {
-//       return this.createRoom(sessionId, data);
-//     }
-//     return this.getRoom(sessionId);
-//   }
-
-//   deleteRoom(sessionId) {
-//     return this.rooms.delete(sessionId);
-//   }
-
-//   hasRoom(sessionId) {
-//     return this.rooms.has(sessionId);
-//   }
-// }
-
-// // Singleton instance
-// export const roomState = new RoomStateManager();
+export const initWhiteboardRTC = (sessionId, whiteboardId, createdBy) => {
+  console.log(`Initializing whiteboard RTC for session: ${sessionId}, whiteboard: ${whiteboardId}, createdBy: ${createdBy}`);
+  
+  if (!roomState.has(sessionId)) {
+    roomState.set(sessionId, {
+      whiteboardId,
+      createdBy,
+      streamerSocketId: null,
+      viewers: new Set(),
+      sockets: new Map(),
+      participants: new Map(),
+      pendingScreenShareRequests: new Map(),
+      activeScreenShares: new Map(),
+      pendingOps: [],
+      flushTimer: null,
+      router: null,
+      transports: new Map(),
+      producers: new Map(),
+      consumers: new Map(),
+    });
+    console.log(`New room state created for session: ${sessionId}`);
+  } else {
+    const s = roomState.get(sessionId);
+    s.whiteboardId = s.whiteboardId || whiteboardId;
+    s.createdBy = s.createdBy || createdBy;
+    console.log(`Existing room state updated for session: ${sessionId}`);
+  }
+  
+  return roomState.get(sessionId);
+};
