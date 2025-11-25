@@ -28,7 +28,8 @@ export const setupSocketHandlers = (io, worker) => {
     webrtcHandlers(socket, io);
     permissionHandlers(socket, io);
 
-    socket.on("disconnect", () => cleanupSocketFromRoom(socket));
+    // ✅ IO PARAMETER ADD KAR DIYA
+    socket.on("disconnect", () => cleanupSocketFromRoom(socket, io));
   });
 };
 

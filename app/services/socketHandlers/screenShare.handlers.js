@@ -642,3 +642,5 @@ const createConsumer = async (socket, io, sessionId, producerId, kind) => {
     console.error("createConsumer error:", error);
   }
 };
+
+export { createConsumer };

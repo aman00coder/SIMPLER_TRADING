@@ -63,7 +63,7 @@ export const broadcastParticipantsList = (io, sessionId) => {
   });
 };
 
-export const cleanupSocketFromRoom = async (socket) => {
+export const cleanupSocketFromRoom = async (socket, io) => {
   console.log(`Cleanup requested for socket: ${socket.id}`);
   try {
     const sid = socket.data?.sessionId;
@@ -89,7 +89,7 @@ export const cleanupSocketFromRoom = async (socket) => {
     }
 
     if (state.activeScreenShares.has(meta.userId)) {
-      await handleViewerScreenShareStop(socket, sid, meta.userId);
+      await cleanupViewerScreenShare(socket, sid, meta.userId); // ✅ NAAM CHANGE KAR DIYA
     }
 
     // Clean up consumers
@@ -141,7 +141,7 @@ export const cleanupSocketFromRoom = async (socket) => {
       });
 
       // 🟢 New event: full list
-      broadcastParticipantsList(sid);
+      broadcastParticipantsList(io, sid);
     }
 
     if (state.whiteboardId) {
@@ -233,8 +233,8 @@ export const cleanupSocketFromRoom = async (socket) => {
   }
 };
 
-// Helper function for screen share stop (needed in cleanup)
-const handleViewerScreenShareStop = async (socket, sessionId, userId = null) => {
+// ✅ NAAM CHANGE KAR DIYA
+const cleanupViewerScreenShare = async (socket, sessionId, userId = null) => {
   // This is a simplified version for cleanup purposes
   const state = roomState.get(sessionId);
   if (!state) return;

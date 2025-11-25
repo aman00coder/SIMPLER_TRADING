@@ -67,10 +67,11 @@ const streamerControlHandler = async (socket, io, data) => {
     const session = await liveSession.findOne({ sessionId });
     if (!session) return;
 
+    // ✅ IO PARAMETER PASS KAR DIYA
     if (status === "PAUSED") {
-      await pauseAllProducers(sessionId, socket.id);
+      await pauseAllProducers(io, sessionId, socket.id);
     } else if (status === "ACTIVE") {
-      await resumeAllProducers(sessionId, socket.id);
+      await resumeAllProducers(io, sessionId, socket.id);
     }
 
     session.status = status;
@@ -87,7 +88,8 @@ const streamerControlHandler = async (socket, io, data) => {
   }
 };
 
-const pauseAllProducers = async (sessionId, socketId) => {
+// ✅ IO PARAMETER ADD KAR DIYA
+const pauseAllProducers = async (io, sessionId, socketId) => {
   const state = roomState.get(sessionId);
   if (!state) return;
 
@@ -106,7 +108,8 @@ const pauseAllProducers = async (sessionId, socketId) => {
   }
 };
 
-const resumeAllProducers = async (sessionId, socketId) => {
+// ✅ IO PARAMETER ADD KAR DIYA
+const resumeAllProducers = async (io, sessionId, socketId) => {
   const state = roomState.get(sessionId);
   if (!state) return;
 
