@@ -1,6 +1,7 @@
 // services/socketHandlers/participant.handlers.js
 import { roomState } from "../socketState/roomState.js";
 import { broadcastParticipantsList, safeEmit } from "../socketUtils/general.utils.js";
+import liveSession from "../../model/liveSessions/liveeSession.model.js";
 
 export const participantHandlers = (socket, io) => {
   socket.on("get_participants", (data, cb) => 
