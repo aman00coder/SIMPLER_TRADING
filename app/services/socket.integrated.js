@@ -11,11 +11,12 @@ export const getIO = () => {
   return io;
 };
 
-export const setupIntegratedSocket = async (server) => {
+export const setupIntegratedSocket = async (server, externalWorker = null) => { // ✅ parameter add karo
   console.log("Setting up integrated socket");
 
   try {
-    mediasoupWorker = await createMediasoupWorker();
+    // ✅ Use external worker if provided, otherwise create new
+    mediasoupWorker = externalWorker || await createMediasoupWorker();
   } catch (error) {
     console.error("Failed to initialize Mediasoup:", error);
     throw error;
@@ -30,13 +31,14 @@ export const setupIntegratedSocket = async (server) => {
     },
   });
 
+  // ✅ Pass mediasoupWorker to setupSocketHandlers
   setupSocketHandlers(io, mediasoupWorker);
 
   console.log("✅ Socket.io setup complete with screen share permission system");
   return io;
 };
 
-export { io };
+export { io, mediasoupWorker }; // ✅ mediasoupWorker bhi export karo
 
 
 

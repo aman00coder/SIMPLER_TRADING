@@ -1,3 +1,4 @@
+// services/socketHandlers/room.handlers.js
 import jwt from "jsonwebtoken";
 import liveSession from "../../model/liveSessions/liveeSession.model.js";
 import liveSessionParticipant from "../../model/liveSessionParticipant/liveSessionParticipant.model.js";
@@ -7,7 +8,8 @@ import { ROLE_MAP } from "../../constant/role.js";
 import { roomState } from "../socketState/roomState.js";
 import { getIceServersFromEnv, broadcastParticipantsList, safeEmit } from "../socketUtils/general.utils.js";
 
-export const roomJoinHandler = (socket, io) => {
+// ✅ mediasoupWorker parameter add karo
+export const roomJoinHandler = (socket, io, mediasoupWorker) => {
   socket.on("join_room", async (data) => {
     const { token, sessionId, roomCode } = data;
     console.log(`Join room request from socket: ${socket.id}, sessionId: ${sessionId}, roomCode: ${roomCode}`);
@@ -156,6 +158,7 @@ export const roomJoinHandler = (socket, io) => {
           },
         ];
 
+        // ✅ Yahan mediasoupWorker use karo (jo parameter mein aaya hai)
         state.router = await mediasoupWorker.createRouter({ mediaCodecs });
         console.log("Mediasoup router created for session:", sid);
       }
