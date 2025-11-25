@@ -11,7 +11,7 @@ export const getIO = () => {
   return io;
 };
 
-export const setupIntegratedSocket = async (server, externalWorker = null) => { // ✅ parameter add karo
+export const setupIntegratedSocket = async (server, externalWorker = null) => { 
   console.log("Setting up integrated socket");
 
   try {
