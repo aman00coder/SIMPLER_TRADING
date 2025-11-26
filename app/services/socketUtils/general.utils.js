@@ -20,7 +20,7 @@ export const safeEmit = (io, toSocketId, event, payload) => {
   }
 };
 
-
+ 
 export const getIceServersFromEnv = () => {
   const isProduction = process.env.NODE_ENV === "production";
 
