@@ -55,11 +55,20 @@ const scheduleSessionAutoEnd = (sessionId, endTime) => {
 export const startLiveSession = async (req, res) => {
   try {
     const io = getIO(); 
-    const { title, description, endTime, maxParticipants, isPrivate } = req.body;
+    const { title, description, endTime, maxParticipants, isPrivate, courseId } = req.body;
     const mentorId = req.tokenData?.userId;
 
     if (!mentorId || !title) {
       return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
+    }
+
+    // 🔹 SIMPLE VERSION: Bas course existence check karen
+    if (courseId) {
+      const course = await mongoose.model("Course").findById(courseId);
+      if (!course) {
+        return sendErrorResponse(res, "Course not found", HttpStatus.NOT_FOUND);
+      }
+      // 🔹 Ownership check REMOVE kiya - koi bhi mentor kisi bhi course ke liye session bana sakta hai
     }
 
     const roomCode = generateRoomCode();
@@ -76,17 +85,27 @@ export const startLiveSession = async (req, res) => {
       roomCode,
       title,
       description: description || "",
+      courseId: courseId || null,
       actualStartTime: new Date(),
       endTime,
       participants: [],
       allowedUsers: [],
       chatMessages: [],
-      recordingUrl: JSON.stringify([]), // 🔹 fixed: store as string
+      recordingUrl: JSON.stringify([]),
       maxParticipants: maxParticipants || 100,
       isPrivate: isPrivate || false,
       status: "ACTIVE",
       totalActiveDuration: 0
     });
+
+    // 🔹 Course mein bhi live session add karen (if courseId provided)
+    if (courseId) {
+      await mongoose.model("Course").findByIdAndUpdate(
+        courseId,
+        { $push: { liveSessions: liveSession._id } },
+        { new: true }
+      );
+    }
 
     const whiteboard = await whiteBoardModel.create({
       whiteboardId: uuidv4(),
@@ -114,6 +133,7 @@ export const startLiveSession = async (req, res) => {
       mentorId,
       title,
       roomCode,
+      courseId: courseId || null,
       maxParticipants,
       whiteboardId: whiteboard._id,
     });
@@ -139,24 +159,30 @@ export const getAllLiveSessions = async (req, res) => {
         }
 
         let filter = {};
-        if (userRole === ROLE_MAP.STREAMER) filter.streamerId = userId;
-        else filter.status = "ACTIVE";
+        if (userRole === ROLE_MAP.STREAMER) {
+            filter.streamerId = userId;
+        } else {
+            filter.status = "ACTIVE";
+        }
 
         const liveSessions = await liveSessionModel
             .find(filter)
             .populate("streamerId", "name email role profilePic")
+            .populate("courseId") // 🔹 SIRF YEH - sare fields automatically aa jayenge
             .populate("participants", "name email role profilePic")
             .populate({
                 path: "whiteboardId",
                 populate: { path: "participants", select: "name email role profilePic" }
-            });
+            })
+            .sort({ createdAt: -1 });
 
         // 🔹 Expired sessions filter
         const sessionsFiltered = liveSessions.map(session => {
+            const sessionObj = session.toObject();
             if (session.status === "ENDED" || (session.endTime && new Date() > new Date(session.endTime))) {
-                return { ...session.toObject(), expired: true };
+                return { ...sessionObj, expired: true };
             }
-            return session;
+            return sessionObj;
         });
 
         return sendSuccessResponse(
@@ -172,6 +198,43 @@ export const getAllLiveSessions = async (req, res) => {
     }
 };
 
+// 🔹 New Controller: Get Live Sessions by Course
+export const getLiveSessionsByCourse = async (req, res) => {
+    try {
+        const { courseId } = req.params;
+        const userId = req.tokenData?.userId;
+
+        if (!courseId) {
+            return sendErrorResponse(res, "Course ID is required", 400);
+        }
+
+        // Verify user has access to this course
+        const course = await mongoose.model("Course").findOne({
+            _id: courseId,
+            $or: [
+                { createdBy: userId }, // Course creator
+                { enrolledUsers: userId } // Enrolled student
+            ]
+        });
+
+        if (!course) {
+            return sendErrorResponse(res, "Course not found or access denied", 404);
+        }
+
+        const liveSessions = await liveSessionModel
+            .find({ courseId, status: { $in: ["ACTIVE", "SCHEDULED"] } })
+            .populate("streamerId", "name email role profilePic")
+            .populate("courseId", "title thumbnail category")
+            .populate("participants", "name email role profilePic")
+            .sort({ actualStartTime: -1 });
+
+        return sendSuccessResponse(res, liveSessions, "Course live sessions fetched successfully", 200);
+
+    } catch (error) {
+        console.error("getLiveSessionsByCourse Error:", error.message);
+        return sendErrorResponse(res, "Internal server error", 500);
+    }
+};
 
 /** Pause Live Session */
 export const pauseLiveSession = async (req, res) => {
@@ -303,6 +366,7 @@ export const getSessionAnalytics = async (req, res) => {
 };
 
 
+
 export const endLiveSession = async (req, res) => {
   try {
     const io = getIO();
@@ -367,6 +431,7 @@ export const getSingleLiveSession = async (req, res) => {
         const liveSession = await liveSessionModel
             .findOne({ sessionId })
             .populate("streamerId", "name email role profilePic")
+            .populate("courseId") // 🔹 SIRF YEH - sare course fields automatically aa jayenge
             .populate("participants", "name email role profilePic")
             .populate("allowedUsers", "name email role profilePic")
             .populate({

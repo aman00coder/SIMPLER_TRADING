@@ -42,6 +42,10 @@ router.route("/getAllLiveSessions").get(
     ADMINSTREAMERVIEWERAuth,
     liveSessionController.getAllLiveSessions
 )
+router.route("/getLiveSessionsByCourse/:courseId").get(
+    ADMINSTREAMERVIEWERAuth,
+    liveSessionController.getLiveSessionsByCourse
+)
 router.route("/getSingleLiveSession/:sessionId").get(
     ADMINSTREAMERVIEWERAuth,
     liveSessionController.getSingleLiveSession

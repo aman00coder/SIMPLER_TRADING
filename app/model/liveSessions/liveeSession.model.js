@@ -8,12 +8,16 @@ const liveSessionSchema = new mongoose.Schema({
         ref: "User",
         required: true
     },
+        courseId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Course",
+        required: false // initially optional, aap required bana sakte hain
+    },
     streamerRole: {
         type: Number,
         enum: [ROLE_MAP.STREAMER],
         default: ROLE_MAP.STREAMER
     },
-
     // 🔹 Session Info
     sessionId: {
         type: String,
