@@ -7,6 +7,7 @@ import { getIO } from "../../services/socket.integrated.js";
 import { ROLE_MAP } from "../../constant/role.js";
 import HttpStatus from "http-status-codes";
 import mongoose from "mongoose";
+import { deleteFileFromS3 } from '../../middleware/aws.s3.js'
 
 export const createCourse = async (req, res) => {
   try {
@@ -116,8 +117,6 @@ export const createCourse = async (req, res) => {
   }
 };
 
-
-
 export const getAllCourse = async (req, res) => {
   try {
     const courses = await courseModel
@@ -162,12 +161,167 @@ export const getSingleCourse = async(req,res)=>{
     }
 }
 
+export const updateCourse = async (req, res) => {
+    try {
+        const { id } = req.params;
 
-export const updateCourse = async(req,res)=>{
-    try{
-        
+        if (!id) {
+            return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
+        }
+
+        const course = await courseModel.findById(id);
+        if (!course) {
+            return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
+        }
+
+        // -------------------------------
+        // 1️⃣ Files coming from S3 Upload
+        // -------------------------------
+        const thumbnailFile = req.files?.thumbnail?.[0];
+        const lectureFiles = req.files?.lectures || [];
+        const assignmentFiles = req.files?.assignments || [];
+
+        // ---------------------------------
+        // 2️⃣ Delete old thumbnail if new one comes
+        // ---------------------------------
+        if (thumbnailFile && course.thumbnail) {
+            await deleteFileFromS3(course.thumbnail);
+            course.thumbnail = thumbnailFile.location;
+        }
+
+        // ---------------------------------
+        // 3️⃣ Lectures (array update)
+        // ---------------------------------
+        if (lectureFiles.length > 0) {
+            // Purana delete
+            if (course.lectures && course.lectures.length > 0) {
+                for (const lec of course.lectures) {
+                    if (lec.url) await deleteFileFromS3(lec.url);
+                }
+            }
+
+            // Naya add
+            course.lectures = lectureFiles.map((file) => ({
+                title: req.body.title || "Lecture",
+                type: "video",
+                url: file.location,
+                duration: req.body.duration || 0,
+                isPreviewFree: req.body.isPreviewFree === "true"
+            }));
+        }
+
+        // ---------------------------------
+        // 4️⃣ Assignments Update
+        // ---------------------------------
+        if (assignmentFiles.length > 0) {
+            if (course.assignments && course.assignments.length > 0) {
+                for (const asg of course.assignments) {
+                    for (const res of asg.resources) {
+                        await deleteFileFromS3(res);
+                    }
+                }
+            }
+
+            course.assignments = [
+                {
+                    title: req.body.assignmentTitle || "Assignment",
+                    description: req.body.assignmentDescription || "",
+                    dueDate: req.body.dueDate || null,
+                    resources: assignmentFiles.map((x) => x.location)
+                }
+            ];
+        }
+
+        // ---------------------------------
+        // 5️⃣ Normal Body Fields Update
+        // ---------------------------------
+        const updatableFields = [
+            "title",
+            "description",
+            "category",
+            "tags",
+            "level",
+            "price",
+            "language",
+            "duration",
+            "rating",
+            "isActive"
+        ];
+
+        updatableFields.forEach((field) => {
+            if (req.body[field] !== undefined) {
+                course[field] = req.body[field];
+            }
+        });
+
+        await course.save();
+
+        return sendSuccessResponse(res, course, successEn.COURSE_UPDATED, HttpStatus.OK);
+
     } catch (error) {
         console.log(error.message);
         return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
     }
-}
+};
+
+export const deleteCourse = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        if (!id) {
+            return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
+        }
+
+        const course = await courseModel.findById(id);
+        if (!course) {
+            return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
+        }
+
+        // ---------------------------------
+        // 1️⃣ Delete Thumbnail
+        // ---------------------------------
+        if (course.thumbnail) {
+            await deleteFileFromS3(course.thumbnail);
+        }
+
+        // ---------------------------------
+        // 2️⃣ Delete Lectures Files
+        // ---------------------------------
+        if (course.lectures && course.lectures.length > 0) {
+            for (const lec of course.lectures) {
+                if (lec.url) {
+                    await deleteFileFromS3(lec.url);
+                }
+            }
+        }
+
+        // ---------------------------------
+        // 3️⃣ Delete Assignment Files
+        // ---------------------------------
+        if (course.assignments && course.assignments.length > 0) {
+            for (const asg of course.assignments) {
+                if (asg.resources && asg.resources.length > 0) {
+                    for (const fileUrl of asg.resources) {
+                        await deleteFileFromS3(fileUrl);
+                    }
+                }
+            }
+        }
+
+        // ---------------------------------
+        // 4️⃣ Delete Course From DB (Hard Delete)
+        // ---------------------------------
+        await courseModel.findByIdAndDelete(id);
+
+        return sendSuccessResponse(
+            res,
+            null,
+            successEn.COURSE_DELETED || "Course deleted successfully",
+            HttpStatus.OK
+        );
+
+    } catch (error) {
+        console.log(error.message);
+        return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+};
