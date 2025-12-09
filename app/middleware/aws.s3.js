@@ -89,6 +89,73 @@ export const deleteFileFromS3 = async (fileUrl) => {
 };
 
 // File Upload Middleware with detailed file info
+// export const uploadFile = (fields) => {
+//     return (req, res, next) => {
+//         const uploadMiddleware = upload.fields(fields);
+
+//         uploadMiddleware(req, res, async (err) => {
+//             if (err) {
+//                 console.error('❌ [ERROR] File upload failed:', err.message);
+//                 return res.status(400).json({ message: '❌ File upload failed', error: err.message });
+//             }
+
+//             console.log("📂 [DEBUG] req.files:", req.files);
+//             console.log("📋 [DEBUG] req.body:", req.body);
+
+//             if (!req.files) {
+//                 return res.status(400).json({ message: '❌ No files uploaded' });
+//             }
+
+//             const fileUrls = {};
+//             const uploadedFiles = [];
+//             const folderName = ''; // agar chahiye to yahan folder name daal sakte ho
+
+//             try {
+//                 for (const field of fields) {
+//                     if (req.files[field.name]?.length > 0) {
+//                         const uploadedFileObjs = [];
+
+//                         for (const file of req.files[field.name]) {
+//                             const uploadedFileUrl = await uploadToS3(file, folderName);
+
+//                             uploadedFileObjs.push({
+//                                 fileName: file.originalname,
+//                                 fileUrl: uploadedFileUrl,
+//                                 fileType: file.mimetype,
+//                                 uploadedBy: req.user?._id || null, // Agar authentication middleware hai to id milegi
+//                                 uploadedAt: new Date()
+//                             });
+
+//                             uploadedFiles.push(uploadedFileUrl);
+//                         }
+
+//                         fileUrls[field.name] = uploadedFileObjs;
+//                     } else {
+//                         // Agar koi existing files update karna ho to wo body me bheja gaya hoga
+//                         fileUrls[field.name] = req.body[`existing_${field.name}`] || [];
+//                     }
+//                 }
+
+//                 // req.body me file info merge kar do
+//                 req.body = { ...req.body, ...fileUrls };
+//                 next();
+
+//             } catch (error) {
+//                 console.error('❌ [ERROR] Middleware file handling failed:', error.message);
+
+//                 // Agar upload ke beech error aaya, to uploaded files delete kar do
+//                 for (const fileUrl of uploadedFiles) {
+//                     await deleteFileFromS3(fileUrl);
+//                 }
+
+//                 return res.status(500).json({ message: '❌ File upload error', error: error.message });
+//             }
+//         });
+//     };
+// };
+
+
+// middleware में console.log जोड़ें:
 export const uploadFile = (fields) => {
     return (req, res, next) => {
         const uploadMiddleware = upload.fields(fields);
@@ -99,8 +166,8 @@ export const uploadFile = (fields) => {
                 return res.status(400).json({ message: '❌ File upload failed', error: err.message });
             }
 
-            console.log("📂 [DEBUG] req.files:", req.files);
-            console.log("📋 [DEBUG] req.body:", req.body);
+            console.log("📂 [DEBUG] req.files (multer के बाद):", req.files);
+            console.log("📋 [DEBUG] req.body (multer के बाद):", req.body);
 
             if (!req.files) {
                 return res.status(400).json({ message: '❌ No files uploaded' });
@@ -108,7 +175,7 @@ export const uploadFile = (fields) => {
 
             const fileUrls = {};
             const uploadedFiles = [];
-            const folderName = ''; // agar chahiye to yahan folder name daal sakte ho
+            const folderName = 'lectures'; // अलग folder बना दें lectures के लिए
 
             try {
                 for (const field of fields) {
@@ -116,34 +183,47 @@ export const uploadFile = (fields) => {
                         const uploadedFileObjs = [];
 
                         for (const file of req.files[field.name]) {
+                            console.log(`📁 [PROCESSING] Uploading file: ${file.originalname}`);
                             const uploadedFileUrl = await uploadToS3(file, folderName);
+                            
+                            console.log(`✅ [UPLOADED] File URL: ${uploadedFileUrl}`);
 
                             uploadedFileObjs.push({
                                 fileName: file.originalname,
                                 fileUrl: uploadedFileUrl,
                                 fileType: file.mimetype,
-                                uploadedBy: req.user?._id || null, // Agar authentication middleware hai to id milegi
+                                uploadedBy: req.user?._id || req.tokenData?.userId || null,
                                 uploadedAt: new Date()
                             });
 
                             uploadedFiles.push(uploadedFileUrl);
                         }
 
+                        // यहाँ महत्वपूर्ण है - सीधे object assign करें
                         fileUrls[field.name] = uploadedFileObjs;
                     } else {
-                        // Agar koi existing files update karna ho to wo body me bheja gaya hoga
-                        fileUrls[field.name] = req.body[`existing_${field.name}`] || [];
+                        console.log(`⚠️ [INFO] No new files for field: ${field.name}`);
                     }
                 }
 
-                // req.body me file info merge kar do
-                req.body = { ...req.body, ...fileUrls };
+                console.log("📦 [FINAL] fileUrls object:", JSON.stringify(fileUrls, null, 2));
+                
+                // req.body में merge करने के बजाय, सीधे req.fileUrls में assign करें
+                req.fileUrls = fileUrls;
+                
+                // req.body में भी assign करें बैकअप के लिए
+                Object.assign(req.body, fileUrls);
+                
+                console.log("✅ [MIDDLEWARE] Upload completed successfully");
+                console.log("📦 [req.fileUrls]:", req.fileUrls);
+                console.log("📋 [req.body after merge]:", req.body);
+                
                 next();
 
             } catch (error) {
                 console.error('❌ [ERROR] Middleware file handling failed:', error.message);
 
-                // Agar upload ke beech error aaya, to uploaded files delete kar do
+                // Rollback uploaded files
                 for (const fileUrl of uploadedFiles) {
                     await deleteFileFromS3(fileUrl);
                 }
