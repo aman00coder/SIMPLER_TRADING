@@ -54,15 +54,13 @@ export const verifyToken = async (req, res, next) => {
     next();
   } catch (error) {
 
-     // Specific error handling
     if (error.name === 'TokenExpiredError') {
-      return sendErrorResponse(res, "Token expired. Please login again.", httpStatus.UNAUTHORIZED);
-    }
-    
-    if (error.name === 'JsonWebTokenError') {
-      return sendErrorResponse(res, "Invalid token", httpStatus.FORBIDDEN);
-    }
-    
+  return sendErrorResponse(res, errorEn.TOKEN_EXPIRED, HttpStatus.UNAUTHORIZED); // 401
+}
+
+if (error.name === 'JsonWebTokenError') {
+  return sendErrorResponse(res, errorEn.TOKEN_INVALID, HttpStatus.FORBIDDEN); // 403
+}
     console.error("Token Verification Error:", error.message);
     return sendErrorResponse(res, errorEn.TOKEN_INVALID, HttpStatus.FORBIDDEN);
   }
