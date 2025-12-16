@@ -794,42 +794,93 @@ export { io, mediasoupWorker }; // ✅ mediasoupWorker bhi export karo
 
 
 
-// // ======= Screen Share Functions =======
-// const handleScreenShareRequest = async (socket, sessionId) => {
+// // // ======= Screen Share Functions =======
+// // const handleScreenShareRequest = async (socket, sessionId) => {
+// //   try {
+// //     console.log("Screen share request from:", socket.id);
+// //     const state = roomState.get(sessionId);
+// //     if (!state || !state.streamerSocketId) return;
+
+// //     const meta = state.sockets.get(socket.id);
+// //     if (!meta) return;
+
+// //     if (state.activeScreenShares.has(meta.userId)) {
+// //       socket.emit("screen-share-error", { message: "You already have an active screen share" });
+// //       return;
+// //     }
+
+// //     const user = await authenticationModel.findById(meta.userId).select("name");
+    
+// //     state.pendingScreenShareRequests.set(meta.userId, {
+// //       userId: meta.userId,
+// //       socketId: socket.id,
+// //       userName: user?.name || "Viewer",
+// //       requestedAt: new Date()
+// //     });
+
+// //     safeEmit(state.streamerSocketId, "screen-share-request", {
+// //       requestedUserId: meta.userId,
+// //       requesterSocketId: socket.id,
+// //       requesterName: user?.name || "Viewer"
+// //     });
+// //     console.log("📩 Screen-share request received from:", meta.userId, "session:", sessionId);
+
+
+// //     socket.emit("screen-share-request-sent");
+// //   } catch (error) {
+// //     console.error("Screen share request error:", error);
+// //     socket.emit("screen-share-error", { message: "Failed to send screen share request" });
+// //   }
+// // };
+
+// const handleScreenShareRequest = async (socket, io, sessionId) => {
 //   try {
 //     console.log("Screen share request from:", socket.id);
 //     const state = roomState.get(sessionId);
-//     if (!state || !state.streamerSocketId) return;
+//     if (!state) return;
 
 //     const meta = state.sockets.get(socket.id);
 //     if (!meta) return;
 
-//     if (state.activeScreenShares.has(meta.userId)) {
-//       socket.emit("screen-share-error", { message: "You already have an active screen share" });
-//       return;
-//     }
+//     // ✅ REMOVED: Permission check - directly allow
+//     // if (state.activeScreenShares.has(meta.userId)) {
+//     //   socket.emit("screen-share-error", { message: "You already have an active screen share" });
+//     //   return;
+//     // }
 
-//     const user = await authenticationModel.findById(meta.userId).select("name");
-    
-//     state.pendingScreenShareRequests.set(meta.userId, {
+//     // ✅ Directly add to active screen shares
+//     state.activeScreenShares.set(meta.userId, {
 //       userId: meta.userId,
 //       socketId: socket.id,
-//       userName: user?.name || "Viewer",
-//       requestedAt: new Date()
+//       userName: meta.userName || "Viewer",
+//       startedAt: new Date(),
 //     });
 
-//     safeEmit(state.streamerSocketId, "screen-share-request", {
-//       requestedUserId: meta.userId,
-//       requesterSocketId: socket.id,
-//       requesterName: user?.name || "Viewer"
+//     // ✅ Update participant status
+//     const participant = state.participants.get(meta.userId);
+//     if (participant) {
+//       participant.isScreenSharing = true;
+
+//       io.to(sessionId).emit("participant_updated", {
+//         userId: meta.userId,
+//         updates: { isScreenSharing: true },
+//       });
+
+//       broadcastParticipantsList(io, sessionId);
+//     }
+
+//     // ✅ Notify all participants
+//     io.to(sessionId).emit("screen-share-started-by-viewer", {
+//       userId: meta.userId,
+//       userName: meta.userName || "Viewer",
+//       socketId: socket.id,
 //     });
-//     console.log("📩 Screen-share request received from:", meta.userId, "session:", sessionId);
 
-
-//     socket.emit("screen-share-request-sent");
+//     console.log(`✅ Viewer ${meta.userId} started screen share directly`);
+    
 //   } catch (error) {
 //     console.error("Screen share request error:", error);
-//     socket.emit("screen-share-error", { message: "Failed to send screen share request" });
+//     socket.emit("screen-share-error", { message: "Failed to start screen share" });
 //   }
 // };
 
@@ -1453,6 +1504,332 @@ export { io, mediasoupWorker }; // ✅ mediasoupWorker bhi export karo
 //   }
 // };
 
+// // const handleViewerAudioProduce = async (
+// //   socket,
+// //   sessionId,
+// //   transportId,
+// //   rtpParameters,
+// //   callback
+// // ) => {
+// //   try {
+// //     console.log("Viewer audio produce for transport:", transportId);
+// //     const state = roomState.get(sessionId);
+// //     if (!state) return callback({ error: "Session not found" });
+
+// //     const transport = state.transports.get(transportId);
+// //     if (!transport) return callback({ error: "Transport not found" });
+
+// //     const producer = await transport.produce({
+// //       kind: "audio",
+// //       rtpParameters,
+// //       appData: {
+// //         socketId: socket.id,
+// //         environment: process.env.NODE_ENV,
+// //         source: "viewer-mic",
+// //         userId: socket.data.userId,
+// //       },
+// //     });
+
+// //     state.producers.set(producer.id, producer);
+
+// //     // 🔴 Old event: notify all participants about the new audio producer
+// //     io.to(sessionId).emit("new-producer", {
+// //       producerId: producer.id,
+// //       kind: producer.kind,
+// //       userId: socket.data.userId,
+// //       source: "viewer-mic",
+// //     });
+
+// //     // 🔴 Old event: audio permission granted
+// //     io.to(sessionId).emit("viewer-audio-permission-granted", {
+// //       userId: socket.data.userId,
+// //       producerId: producer.id,
+// //       socketId: socket.id,
+// //       userName: state.sockets.get(socket.id)?.userName || "Viewer",
+// //     });
+
+// //     callback({ id: producer.id });
+
+// //     // Participant update
+// //     const meta = state.sockets.get(socket.id);
+// //     if (meta) {
+// //       const participant = state.participants.get(meta.userId);
+// //       if (participant) {
+// //         participant.hasAudio = true;
+
+// //         // 🔴 Old event (keep for compatibility)
+// //         io.to(sessionId).emit("participant_updated", {
+// //           userId: meta.userId,
+// //           updates: { hasAudio: true },
+// //         });
+
+// //         // 🟢 New event (full snapshot)
+// //         broadcastParticipantsList(sessionId);
+// //       }
+// //     }
+
+// //     producer.on("transportclose", () => {
+// //       console.log("Viewer audio producer transport closed:", producer.id);
+// //       try {
+// //         producer.close();
+// //       } catch (e) {
+// //         // ignore
+// //       }
+// //       state.producers.delete(producer.id);
+// //     });
+// //   } catch (error) {
+// //     console.error("Viewer audio produce error:", error);
+// //     callback({ error: error.message });
+// //   }
+// // };
+
+
+
+// // const handleViewerVideoProduce = async (
+// //   socket,
+// //   sessionId,
+// //   transportId,
+// //   rtpParameters,
+// //   callback
+// // ) => {
+// //   try {
+// //     console.log("Viewer video produce for transport:", transportId);
+// //     const state = roomState.get(sessionId);
+// //     if (!state) return callback({ error: "Session not found" });
+
+// //     const transport = state.transports.get(transportId);
+// //     if (!transport) return callback({ error: "Transport not found" });
+
+// //     const producer = await transport.produce({
+// //       kind: "video",
+// //       rtpParameters,
+// //       appData: {
+// //         socketId: socket.id,
+// //         environment: process.env.NODE_ENV,
+// //         source: "viewer-camera",
+// //         userId: socket.data.userId,
+// //       },
+// //     });
+
+// //     state.producers.set(producer.id, producer);
+
+// //     // 🔴 Old event: notify all participants about the new video producer
+// //     io.to(sessionId).emit("new-producer", {
+// //       producerId: producer.id,
+// //       kind: producer.kind,
+// //       userId: socket.data.userId,
+// //       source: "viewer-camera",
+// //     });
+
+// //     callback({ id: producer.id });
+
+// //     // ✅ Update participant status
+// //     const meta = state.sockets.get(socket.id);
+// //     if (meta) {
+// //       const participant = state.participants.get(meta.userId);
+// //       if (participant) {
+// //         participant.hasVideo = true;
+
+// //         // 🔴 Old event (partial update — keep for compatibility)
+// //         io.to(sessionId).emit("participant_updated", {
+// //           userId: meta.userId,
+// //           updates: { hasVideo: true },
+// //         });
+
+// //         // 🟢 New event (full snapshot)
+// //         broadcastParticipantsList(sessionId);
+// //       }
+// //     }
+
+// //     producer.on("transportclose", () => {
+// //       console.log("Viewer video producer transport closed:", producer.id);
+// //       try {
+// //         producer.close();
+// //       } catch (e) {
+// //         // ignore
+// //       }
+// //       state.producers.delete(producer.id);
+// //     });
+// //   } catch (error) {
+// //     console.error("Viewer video produce error:", error);
+// //     callback({ error: error.message });
+// //   }
+// // };
+
+
+
+// // const handleViewerAudioProduce = async (socket, io, sessionId, transportId, rtpParameters, callback) => {
+// //   try {
+// //     console.log("Viewer audio produce for transport:", transportId);
+// //     const state = roomState.get(sessionId);
+// //     if (!state) return callback({ error: "Session not found" });
+
+// //     const transport = state.transports.get(transportId);
+// //     if (!transport) return callback({ error: "Transport not found" });
+
+// //     const producer = await transport.produce({
+// //       kind: "audio",
+// //       rtpParameters,
+// //       appData: {
+// //         socketId: socket.id,
+// //         environment: process.env.NODE_ENV,
+// //         source: "viewer-mic",
+// //         userId: socket.data.userId,
+// //       },
+// //     });
+
+// //     state.producers.set(producer.id, producer);
+
+// //     // ✅ Directly notify all participants (no permission request needed)
+// //     io.to(sessionId).emit("new-producer", {
+// //       producerId: producer.id,
+// //       kind: producer.kind,
+// //       userId: socket.data.userId,
+// //       source: "viewer-mic",
+// //     });
+
+// //     callback({ id: producer.id });
+
+// //     // ✅ Directly update participant status
+// //     const meta = state.sockets.get(socket.id);
+// //     if (meta) {
+// //       const participant = state.participants.get(meta.userId);
+// //       if (participant) {
+// //         participant.hasAudio = true;
+
+// //         io.to(sessionId).emit("participant_updated", {
+// //           userId: meta.userId,
+// //           updates: { hasAudio: true },
+// //         });
+
+// //         broadcastParticipantsList(io, sessionId);
+// //       }
+// //     }
+
+// //     producer.on("transportclose", () => {
+// //       console.log("Viewer audio producer transport closed:", producer.id);
+// //       try {
+// //         producer.close();
+// //       } catch (e) {
+// //         // ignore
+// //       }
+// //       state.producers.delete(producer.id);
+// //     });
+// //   } catch (error) {
+// //     console.error("Viewer audio produce error:", error);
+// //     callback({ error: error.message });
+// //   }
+// // };
+
+
+// // const handleViewerAudioProduce = async (
+// //   socket,
+// //   sessionId,
+// //   transportId,
+// //   rtpParameters,
+// //   callback
+// // ) => {
+// //   try {
+// //     console.log("🎤 Viewer audio produce for transport:", transportId);
+// //     const state = roomState.get(sessionId);
+// //     if (!state) {
+// //       if (callback && typeof callback === 'function') {
+// //         return callback({ error: "Session not found" });
+// //       }
+// //       return;
+// //     }
+
+// //     const transport = state.transports.get(transportId);
+// //     if (!transport) {
+// //       if (callback && typeof callback === 'function') {
+// //         return callback({ error: "Transport not found" });
+// //       }
+// //       return;
+// //     }
+
+// //     const meta = state.sockets.get(socket.id);
+// //     if (!meta) {
+// //       if (callback && typeof callback === 'function') {
+// //         return callback({ error: "Unauthorized" });
+// //       }
+// //       return;
+// //     }
+
+// //     // Produce audio track
+// //     const producer = await transport.produce({
+// //       kind: "audio",
+// //       rtpParameters,
+// //       appData: {
+// //         socketId: socket.id,
+// //         environment: process.env.NODE_ENV,
+// //         source: "viewer-mic",
+// //         userId: meta.userId,
+// //       },
+// //     });
+
+// //     state.producers.set(producer.id, producer);
+
+// //     // ✅ Update participant status
+// //     const participant = state.participants.get(meta.userId);
+// //     if (participant) {
+// //       participant.hasAudio = true;
+      
+// //       // Notify all participants
+// //       io.to(sessionId).emit("participant_updated", {
+// //         userId: meta.userId,
+// //         updates: { hasAudio: true },
+// //       });
+      
+// //       broadcastParticipantsList(sessionId);
+// //     }
+
+// //     // ✅ Notify everyone about new audio producer
+// //     io.to(sessionId).emit("new-producer", {
+// //       producerId: producer.id,
+// //       kind: producer.kind,
+// //       userId: meta.userId,
+// //       source: "viewer-mic",
+// //     });
+
+// //     // ✅ Callback with producer ID
+// //     if (callback && typeof callback === 'function') {
+// //       callback({ id: producer.id });
+// //     }
+
+// //     producer.on("transportclose", () => {
+// //       console.log("Viewer audio producer transport closed:", producer.id);
+// //       try {
+// //         producer.close();
+// //       } catch (e) {
+// //         // ignore
+// //       }
+// //       state.producers.delete(producer.id);
+      
+// //       // Update participant status
+// //       if (meta) {
+// //         const participant = state.participants.get(meta.userId);
+// //         if (participant) {
+// //           participant.hasAudio = false;
+// //           io.to(sessionId).emit("participant_updated", {
+// //             userId: meta.userId,
+// //             updates: { hasAudio: false },
+// //           });
+// //         }
+// //       }
+// //     });
+
+// //     console.log(`✅ Viewer audio producer created: ${producer.id} for user: ${meta.userId}`);
+
+// //   } catch (error) {
+// //     console.error("❌ Viewer audio produce error:", error);
+// //     if (callback && typeof callback === 'function') {
+// //       callback({ error: error.message });
+// //     }
+// //   }
+// // };
+
+
+// // ✅ UPDATED: handleViewerAudioProduce function fix
 // const handleViewerAudioProduce = async (
 //   socket,
 //   sessionId,
@@ -1461,13 +1838,40 @@ export { io, mediasoupWorker }; // ✅ mediasoupWorker bhi export karo
 //   callback
 // ) => {
 //   try {
-//     console.log("Viewer audio produce for transport:", transportId);
+//     console.log("🎤 Viewer audio produce for transport:", transportId);
 //     const state = roomState.get(sessionId);
-//     if (!state) return callback({ error: "Session not found" });
+//     if (!state) {
+//       console.error("❌ Session not found:", sessionId);
+//       return callback({ error: "Session not found" });
+//     }
 
 //     const transport = state.transports.get(transportId);
-//     if (!transport) return callback({ error: "Transport not found" });
+//     if (!transport) {
+//       console.error("❌ Transport not found:", transportId);
+//       return callback({ error: "Transport not found" });
+//     }
 
+//     const meta = state.sockets.get(socket.id);
+//     if (!meta) {
+//       console.error("❌ Socket metadata not found for socket:", socket.id);
+//       return callback({ error: "Unauthorized" });
+//     }
+
+//     // Check if there's already an audio producer for this user
+//     for (const [existingProducerId, existingProducer] of state.producers) {
+//       if (
+//         existingProducer.appData?.userId === meta.userId &&
+//         existingProducer.appData?.source === "viewer-mic" &&
+//         existingProducer.kind === "audio"
+//       ) {
+//         console.log("✅ User already has an audio producer:", existingProducerId);
+//         // Return existing producer ID
+//         return callback({ id: existingProducerId });
+//       }
+//     }
+
+//     // Produce audio track
+//     console.log("🎤 Creating new audio producer for user:", meta.userId);
 //     const producer = await transport.produce({
 //       kind: "audio",
 //       rtpParameters,
@@ -1475,72 +1879,108 @@ export { io, mediasoupWorker }; // ✅ mediasoupWorker bhi export karo
 //         socketId: socket.id,
 //         environment: process.env.NODE_ENV,
 //         source: "viewer-mic",
-//         userId: socket.data.userId,
+//         userId: meta.userId,
+//         userName: meta.userName || "Viewer"
 //       },
 //     });
 
 //     state.producers.set(producer.id, producer);
+//     console.log("✅ Audio producer created:", producer.id);
 
-//     // 🔴 Old event: notify all participants about the new audio producer
+//     // ✅ Update participant status
+//     const participant = state.participants.get(meta.userId);
+//     if (participant) {
+//       participant.hasAudio = true;
+      
+//       // Notify all participants about status change
+//       io.to(sessionId).emit("participant_updated", {
+//         userId: meta.userId,
+//         updates: { hasAudio: true },
+//       });
+      
+//       // Broadcast updated participants list
+//       broadcastParticipantsList(sessionId);
+//     }
+
+//     // ✅ Notify everyone about new audio producer
 //     io.to(sessionId).emit("new-producer", {
 //       producerId: producer.id,
 //       kind: producer.kind,
-//       userId: socket.data.userId,
+//       userId: meta.userId,
 //       source: "viewer-mic",
+//       socketId: socket.id
 //     });
 
-//     // 🔴 Old event: audio permission granted
-//     io.to(sessionId).emit("viewer-audio-permission-granted", {
-//       userId: socket.data.userId,
+//     // ✅ Specifically send to the viewer who started audio
+//     io.to(socket.id).emit("viewer-audio-permission-granted", {
+//       userId: meta.userId,
 //       producerId: producer.id,
 //       socketId: socket.id,
-//       userName: state.sockets.get(socket.id)?.userName || "Viewer",
+//       userName: meta.userName || "Viewer",
 //     });
 
-//     callback({ id: producer.id });
+//     // ✅ Notify all that viewer audio started
+//     io.to(sessionId).emit("viewer-audio-started", {
+//       userId: meta.userId,
+//       producerId: producer.id,
+//       socketId: socket.id,
+//       userName: meta.userName || "Viewer",
+//     });
 
-//     // Participant update
-//     const meta = state.sockets.get(socket.id);
-//     if (meta) {
-//       const participant = state.participants.get(meta.userId);
-//       if (participant) {
-//         participant.hasAudio = true;
-
-//         // 🔴 Old event (keep for compatibility)
-//         io.to(sessionId).emit("participant_updated", {
-//           userId: meta.userId,
-//           updates: { hasAudio: true },
-//         });
-
-//         // 🟢 New event (full snapshot)
-//         broadcastParticipantsList(sessionId);
-//       }
+//     // ✅ Callback with producer ID
+//     if (callback && typeof callback === 'function') {
+//       callback({ id: producer.id });
 //     }
 
+//     // Handle producer events
 //     producer.on("transportclose", () => {
-//       console.log("Viewer audio producer transport closed:", producer.id);
+//       console.log("📴 Viewer audio producer transport closed:", producer.id);
 //       try {
 //         producer.close();
 //       } catch (e) {
-//         // ignore
+//         console.warn("Error closing audio producer:", e);
+//       }
+//       state.producers.delete(producer.id);
+      
+//       // Update participant status
+//       if (meta) {
+//         const participant = state.participants.get(meta.userId);
+//         if (participant) {
+//           participant.hasAudio = false;
+//           io.to(sessionId).emit("participant_updated", {
+//             userId: meta.userId,
+//             updates: { hasAudio: false },
+//           });
+//           broadcastParticipantsList(sessionId);
+//         }
+//       }
+//     });
+
+//     producer.on("trackended", () => {
+//       console.log("🎤 Audio track ended for producer:", producer.id);
+//       // Clean up automatically
+//       try {
+//         producer.close();
+//       } catch (e) {
+//         console.warn("Error closing track-ended producer:", e);
 //       }
 //       state.producers.delete(producer.id);
 //     });
+
+//     console.log(`✅ Audio setup complete for user: ${meta.userId}`);
+
 //   } catch (error) {
-//     console.error("Viewer audio produce error:", error);
-//     callback({ error: error.message });
+//     console.error("❌ Viewer audio produce error:", error);
+//     if (callback && typeof callback === 'function') {
+//       callback({ 
+//         error: error.message,
+//         code: error.name === 'TypeError' ? 'TYPE_ERROR' : 'UNKNOWN_ERROR'
+//       });
+//     }
 //   }
 // };
 
-
-
-// const handleViewerVideoProduce = async (
-//   socket,
-//   sessionId,
-//   transportId,
-//   rtpParameters,
-//   callback
-// ) => {
+// const handleViewerVideoProduce = async (socket, io, sessionId, transportId, rtpParameters, callback) => {
 //   try {
 //     console.log("Viewer video produce for transport:", transportId);
 //     const state = roomState.get(sessionId);
@@ -1562,7 +2002,7 @@ export { io, mediasoupWorker }; // ✅ mediasoupWorker bhi export karo
 
 //     state.producers.set(producer.id, producer);
 
-//     // 🔴 Old event: notify all participants about the new video producer
+//     // ✅ Directly notify all participants
 //     io.to(sessionId).emit("new-producer", {
 //       producerId: producer.id,
 //       kind: producer.kind,
@@ -1572,21 +2012,19 @@ export { io, mediasoupWorker }; // ✅ mediasoupWorker bhi export karo
 
 //     callback({ id: producer.id });
 
-//     // ✅ Update participant status
+//     // ✅ Directly update participant status
 //     const meta = state.sockets.get(socket.id);
 //     if (meta) {
 //       const participant = state.participants.get(meta.userId);
 //       if (participant) {
 //         participant.hasVideo = true;
 
-//         // 🔴 Old event (partial update — keep for compatibility)
 //         io.to(sessionId).emit("participant_updated", {
 //           userId: meta.userId,
 //           updates: { hasVideo: true },
 //         });
 
-//         // 🟢 New event (full snapshot)
-//         broadcastParticipantsList(sessionId);
+//         broadcastParticipantsList(io, sessionId);
 //       }
 //     }
 
@@ -1604,8 +2042,6 @@ export { io, mediasoupWorker }; // ✅ mediasoupWorker bhi export karo
 //     callback({ error: error.message });
 //   }
 // };
-
-
 // const handleViewerAudioRequest = async (socket, sessionId) => {
 //   try {
 //     console.log("Viewer audio permission request from:", socket.id);
@@ -2786,9 +3222,10 @@ export { io, mediasoupWorker }; // ✅ mediasoupWorker bhi export karo
 //       handleViewerVideoRequest(socket, data.sessionId)
 //     );
 
-//     socket.on("transport-produce-viewer-audio", (data, cb) =>
-//       handleViewerAudioProduce(socket, data.sessionId, data.transportId, data.rtpParameters, cb)
-//     );
+//    // ✅ CORRECT: Handle transport-produce-viewer-audio event
+// socket.on("transport-produce-viewer-audio", (data, cb) =>
+//   handleViewerAudioProduce(socket, data.sessionId, data.transportId, data.rtpParameters, cb)
+// );
 
 //     socket.on("transport-produce-viewer-video", (data, cb) =>
 //       handleViewerVideoProduce(socket, data.sessionId, data.transportId, data.rtpParameters, cb)
@@ -3105,4 +3542,6 @@ export { io, mediasoupWorker }; // ✅ mediasoupWorker bhi export karo
 // };
 
 // export { getIO }; 
+
+
 

@@ -49,36 +49,50 @@ const handleScreenShareRequest = async (socket, io, sessionId) => {
   try {
     console.log("Screen share request from:", socket.id);
     const state = roomState.get(sessionId);
-    if (!state || !state.streamerSocketId) return;
+    if (!state) return;
 
     const meta = state.sockets.get(socket.id);
     if (!meta) return;
 
-    if (state.activeScreenShares.has(meta.userId)) {
-      socket.emit("screen-share-error", { message: "You already have an active screen share" });
-      return;
-    }
+    // ✅ REMOVED: Permission check - directly allow
+    // if (state.activeScreenShares.has(meta.userId)) {
+    //   socket.emit("screen-share-error", { message: "You already have an active screen share" });
+    //   return;
+    // }
 
-    const user = await authenticationModel.findById(meta.userId).select("name");
-    
-    state.pendingScreenShareRequests.set(meta.userId, {
+    // ✅ Directly add to active screen shares
+    state.activeScreenShares.set(meta.userId, {
       userId: meta.userId,
       socketId: socket.id,
-      userName: user?.name || "Viewer",
-      requestedAt: new Date()
+      userName: meta.userName || "Viewer",
+      startedAt: new Date(),
     });
 
-    safeEmit(io, state.streamerSocketId, "screen-share-request", {
-      requestedUserId: meta.userId,
-      requesterSocketId: socket.id,
-      requesterName: user?.name || "Viewer"
-    });
-    console.log("📩 Screen-share request received from:", meta.userId, "session:", sessionId);
+    // ✅ Update participant status
+    const participant = state.participants.get(meta.userId);
+    if (participant) {
+      participant.isScreenSharing = true;
 
-    socket.emit("screen-share-request-sent");
+      io.to(sessionId).emit("participant_updated", {
+        userId: meta.userId,
+        updates: { isScreenSharing: true },
+      });
+
+      broadcastParticipantsList(io, sessionId);
+    }
+
+    // ✅ Notify all participants
+    io.to(sessionId).emit("screen-share-started-by-viewer", {
+      userId: meta.userId,
+      userName: meta.userName || "Viewer",
+      socketId: socket.id,
+    });
+
+    console.log(`✅ Viewer ${meta.userId} started screen share directly`);
+    
   } catch (error) {
     console.error("Screen share request error:", error);
-    socket.emit("screen-share-error", { message: "Failed to send screen share request" });
+    socket.emit("screen-share-error", { message: "Failed to start screen share" });
   }
 };
 
