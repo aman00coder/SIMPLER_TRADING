@@ -366,7 +366,7 @@ router.route("/createCourse").post(
 );
 
 router.route("/getAllCourses").get(
-    courseController.getAllCourse
+    ADMINSTREAMERAuth,courseController.getAllCourse
 );
 
 router.route("/getAllCoursesForUser").get(
