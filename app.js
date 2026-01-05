@@ -40,7 +40,7 @@ const createMediasoupWorker = async () => {
 // Middleware & setup
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN?.split(",") || ["http://localhost:5174"],
+    origin: process.env.CORS_ORIGIN?.split(",") || ["http://192.168.1.15:5174"],
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,

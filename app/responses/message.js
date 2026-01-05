@@ -97,6 +97,11 @@ export const errorEn = {
 
   // 🚫 Role restriction
   FORBIDDEN: "🚫 Access denied: Your role is not allowed to perform this action.",
+  NO_TOKEN: "🚫 No token provided.",
+  TOKEN_INVALID: "🔑 Invalid token.",
+  TOKEN_EXPIRED: "⏰ Token expired. Please login again.",
+  LOGGED_OUT: "👋 User logged out. Please login again.",
+  INVALID_ROLE: "🚫 Invalid role in token.",
 
   // ==================== ❌ LIVE SESSION ERRORS ====================
   LIVE_SESSION_ALREADY_EXISTS: "🚫 Live session with this room code already exists.",

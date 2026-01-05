@@ -11,7 +11,6 @@ import { ROLE_MAP } from "../../constant/role.js";
 /**
  * Start Live Session
  */
-// 🔹 Helper: secure random alphanumeric roomCode
 /** Helper: Generate secure 6-char roomCode */
 const generateRoomCode = () => {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -553,6 +552,7 @@ export const softDeleteLiveSession = async (req, res) => {
 // 🔹 Restore live session
 export const restoreLiveSession = async (req, res) => {
   try {
+    
     const { sessionId } = req.params;
     if (!sessionId) return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
 

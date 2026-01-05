@@ -8,7 +8,7 @@ import liveSessionParticipantRoutes from "./liveSessionParticipant/liveSessionPa
 import livSessionWhiteBoardRoutes from "./liveSessionWhiteBoard/liveSessionWhiteBoard.routes.js";
 import liveChatRoutes from "./liveChat/liveChat.routes.js"
 import courseRoutes from "./course/course.routes.js"
-
+import courseLiveSessionRoutes from "./courseLiveSession/courseLiveSession.routes.js"
 router.use("/auth", authenticationRoutes);
 router.use("/whiteboard", whiteBoardRoutes);
 router.use("/liveSession", liveSessionRoutes);
@@ -16,6 +16,7 @@ router.use("/liveSessionParticipant", liveSessionParticipantRoutes);
 router.use("/liveSessionWhiteboard", livSessionWhiteBoardRoutes);
 router.use("/liveChat", liveChatRoutes);
 router.use("/course", courseRoutes);
+router.use("/courseLiveSession", courseLiveSessionRoutes);
 
 export default router;
 
