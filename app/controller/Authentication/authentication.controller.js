@@ -219,6 +219,14 @@ export const login = async (req, res) => {
         return sendErrorResponse(res, errorEn.INVALID_CREDENTIALS, HttpStatus.UNAUTHORIZED);
       }
 
+      if (!user.isActive) {
+  return sendErrorResponse(
+    res,
+    "Your account is blocked by admin",
+    HttpStatus.FORBIDDEN
+  );
+}
+
       const token = generateToken(user); 
 
       return sendSuccessResponse(res, {

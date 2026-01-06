@@ -9,6 +9,11 @@ import livSessionWhiteBoardRoutes from "./liveSessionWhiteBoard/liveSessionWhite
 import liveChatRoutes from "./liveChat/liveChat.routes.js"
 import courseRoutes from "./course/course.routes.js"
 import courseLiveSessionRoutes from "./courseLiveSession/courseLiveSession.routes.js"
+import adminStreamerRoutes from "./admin/streamer/streamer.admin.routes.js";
+
+
+
+router.use("/admin/streamer", adminStreamerRoutes);
 router.use("/auth", authenticationRoutes);
 router.use("/whiteboard", whiteBoardRoutes);
 router.use("/liveSession", liveSessionRoutes);
