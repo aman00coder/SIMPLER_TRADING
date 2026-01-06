@@ -66,16 +66,27 @@ if (error.name === 'JsonWebTokenError') {
   }
 };
 
+// export const checkRole = (allowedRoles = []) => {
+//   return (req, res, next) => {
+//     const roleName = req.tokenData?.roleName; // 👈 STRING (ADMIN)
+
+//     if (!allowedRoles.includes(roleName)) {
+//       return sendErrorResponse(
+//         res,
+//         "Access denied: insufficient permissions",
+//         HttpStatus.FORBIDDEN
+//       );
+//     }
+//     next();
+//   };
+// };
+
+
 export const checkRole = (allowedRoles = []) => {
   return (req, res, next) => {
-    const roleName = req.tokenData?.roleName; // 👈 STRING (ADMIN)
-
-    if (!allowedRoles.includes(roleName)) {
-      return sendErrorResponse(
-        res,
-        "Access denied: insufficient permissions",
-        HttpStatus.FORBIDDEN
-      );
+    const userRole = req.tokenData?.role;
+    if (!allowedRoles.includes(userRole)) {
+      return sendErrorResponse(res, "Access denied: insufficient permissions", HttpStatus.FORBIDDEN);
     }
     next();
   };
