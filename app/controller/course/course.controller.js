@@ -1,7 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import courseModel from "../../model/course/course.model.js";
 import authenticationModel from "../../model/Authentication/authentication.model.js";
-import * as commonServices from "../../services/common.js";
 import { sendSuccessResponse, sendErrorResponse } from "../../responses/responses.js";
 import { errorEn, successEn } from "../../responses/message.js";
 import { getIO } from "../../services/socket.integrated.js";
