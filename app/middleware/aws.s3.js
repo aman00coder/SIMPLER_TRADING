@@ -36,7 +36,7 @@
 // };
 
 // // Upload File to S3
-// export const uploadToS3 = async (file, apiFolder = '') => { 
+// export const uploadToS3 = async (file, apiFolder = '') => {
 //     const bucketName = process.env.AWS_S3_BUCKET_NAME;
 //     const sanitizedFileName = sanitizeFileName(file.originalname);
 //     const fileKey = apiFolder ? `${apiFolder}/${Date.now()}_${sanitizedFileName}` : `${Date.now()}_${sanitizedFileName}`;
