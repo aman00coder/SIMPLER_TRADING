@@ -141,54 +141,6 @@ function getFileType(mimeType) {
     return 'note';
 }
 
-
-// Check if user is enrolled in a course
-// export const checkEnrollment = async (req, res) => {
-//   try {
-//     const { courseId } = req.params;
-//     const userId = req.tokenData?.userId;
-
-//     // Find course
-//     const course = await courseModel.findById(courseId).select('title description thumbnail category level price enrolledUsers');
-    
-//     if (!course) {
-//       return res.status(404).json({
-//         success: false,
-//         message: 'Course not found'
-//       });
-//     }
-
-//     // Check if user is enrolled
-//     const isEnrolled = course.enrolledUsers.some(
-//       enrollment => enrollment.user.toString() === userId
-//     );
-
-//     res.status(200).json({
-//       success: true,
-//       isEnrolled,
-//       course: {
-//         _id: course._id,
-//         title: course.title,
-//         description: course.description,
-//         thumbnail: course.thumbnail,
-//         category: course.category,
-//         level: course.level,
-//         price: course.price,
-//         enrolledCount: course.enrolledUsers.length
-//       }
-//     });
-
-//   } catch (error) {
-//     console.error('Error checking enrollment:', error);
-//     res.status(500).json({
-//       success: false,
-//       message: 'Server error while checking enrollment'
-//     });
-//   }
-// };
-
-
-
 export const getSingleCourseForEnrolledUsers = async (req, res) => {
   try {
     const { id } = req.params;
@@ -326,7 +278,6 @@ export const getSingleCourseForEnrolledUsers = async (req, res) => {
   }
 };
 
-
 export const getAllCoursesForUser = async (req, res) => {
   try {
     const courses = await courseModel
@@ -374,7 +325,6 @@ export const getAllCoursesForUser = async (req, res) => {
     );
   }
 };
-
 
 export const checkEnrollment = async (req, res) => {
   try {
@@ -495,23 +445,69 @@ export const checkEnrollment = async (req, res) => {
   }
 };
 
-
-
-// ✅ Get All Courses
+// ✅ Get All Courses (With Streamer Ownership Check)
 export const getAllCourse = async (req, res) => {
   try {
+    const userRole = req.tokenData?.role;
+    const userId = req.tokenData?.userId;
+    const { page = 1, limit = 10, streamerId } = req.query;
+    
+    const skip = (page - 1) * limit;
+
+    // Build query based on user role
+    let query = {};
+    
+    if (userRole === ROLE_MAP.STREAMER) {
+      // Streamer can only see their own courses
+      query.createdBy = userId;
+    } else if (userRole === ROLE_MAP.ADMIN) {
+      // Admin can see all courses, optionally filter by streamer
+      if (streamerId) {
+        query.createdBy = streamerId;
+      }
+    } else if (userRole === ROLE_MAP.VIEWER) {
+      // Viewer can only see active courses
+      query.isActive = true;
+    }
+
+    // Get total count
+    const total = await courseModel.countDocuments(query);
+
     const courses = await courseModel
-      .find()
-      .populate("createdBy", "name email") 
+      .find(query)
+      .populate("createdBy", "name email profilePic") 
+      .populate("enrolledUsers.user", "name email")
+      .skip(skip)
+      .limit(parseInt(limit))
+      .sort({ createdAt: -1 })
       .lean();
 
     if (!courses || courses.length === 0) {
       return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
     }
 
+    // Enrich courses with enrollment count
+    const enrichedCourses = courses.map(course => ({
+      ...course,
+      enrolledCount: course.enrolledUsers?.length || 0,
+      instructor: course.createdBy?.name || 'Unknown',
+      canEdit: userRole === ROLE_MAP.ADMIN || 
+               (userRole === ROLE_MAP.STREAMER && course.createdBy?._id?.toString() === userId),
+      canDelete: userRole === ROLE_MAP.ADMIN || 
+                 (userRole === ROLE_MAP.STREAMER && course.createdBy?._id?.toString() === userId)
+    }));
+
     return sendSuccessResponse(
       res,
-      courses,
+      {
+        courses: enrichedCourses,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(total / limit),
+          totalItems: total,
+          itemsPerPage: parseInt(limit)
+        }
+      },
       successEn.COURSE_FETCHED,
       HttpStatus.OK
     );
@@ -525,7 +521,7 @@ export const getAllCourse = async (req, res) => {
   }
 };
 
-// ✅ Get Single Course
+// ✅ Get Single Course (With Ownership Check)
 export const getSingleCourse = async (req, res) => {
   try {
     const { id } = req.params;
@@ -538,10 +534,20 @@ export const getSingleCourse = async (req, res) => {
 
     const course = await courseModel.findById(id)
       .populate("createdBy", "name email profilePic")
+      .populate("enrolledUsers.user", "name email profilePic")
       .lean();
 
     if (!course) {
       return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
+    }
+
+    // Check ownership and permissions
+    const isOwner = course.createdBy?._id?.toString() === userId;
+    const isAdmin = userRole === ROLE_MAP.ADMIN;
+    const canAccess = isOwner || isAdmin;
+
+    if (!canAccess) {
+      return sendErrorResponse(res, "You are not authorized to view this course", HttpStatus.FORBIDDEN);
     }
 
     let isEnrolled = false;
@@ -564,14 +570,19 @@ export const getSingleCourse = async (req, res) => {
       }
     }
 
-    const totalEnrolled = await courseModel.findById(id).select('enrolledUsers');
-    const enrolledCount = totalEnrolled?.enrolledUsers?.length || 0;
+    const enrolledCount = course.enrolledUsers?.length || 0;
 
     const response = {
       ...course,
       isEnrolled,
       enrollmentInfo,
-      enrolledCount
+      enrolledCount,
+      permissions: {
+        canEdit: isOwner || isAdmin,
+        canDelete: isOwner || isAdmin,
+        canToggleActive: isAdmin,
+        canViewEnrollments: isOwner || isAdmin
+      }
     };
 
     return sendSuccessResponse(res, response, successEn.COURSE_FETCHED, HttpStatus.OK);
@@ -581,10 +592,12 @@ export const getSingleCourse = async (req, res) => {
   }
 };
 
-// ✅ Update Course
+// ✅ Update Course (With Ownership Check)
 export const updateCourse = async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = req.tokenData?.userId;
+    const userRole = req.tokenData?.role;
 
     if (!id) {
       return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
@@ -595,14 +608,15 @@ export const updateCourse = async (req, res) => {
       return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
     }
 
-    const userId = req.tokenData?.userId;
-    const userRole = req.tokenData?.role;
+    // Check ownership and permissions
+    const isOwner = course.createdBy.toString() === userId;
+    const isAdmin = userRole === ROLE_MAP.ADMIN;
     
-    // ADMIN aur STREAMER dono ek dusre ke courses update kar sakte hain
-    if (![ROLE_MAP.ADMIN, ROLE_MAP.STREAMER].includes(userRole)) {
-      return sendErrorResponse(res, "You are not authorized to update courses", HttpStatus.FORBIDDEN);
+    if (!isOwner && !isAdmin) {
+      return sendErrorResponse(res, "You are not authorized to update this course", HttpStatus.FORBIDDEN);
     }
 
+    // Handle file uploads
     const thumbnailFile = req.files?.thumbnail?.[0];
     const lectureFiles = req.files?.lectures || [];
     const assignmentFiles = req.files?.assignments || [];
@@ -647,6 +661,7 @@ export const updateCourse = async (req, res) => {
       ];
     }
 
+    // Update fields
     const updatableFields = [
       "title",
       "description",
@@ -656,8 +671,7 @@ export const updateCourse = async (req, res) => {
       "price",
       "language",
       "duration",
-      "rating",
-      "isActive"
+      "rating"
     ];
 
     updatableFields.forEach((field) => {
@@ -665,6 +679,11 @@ export const updateCourse = async (req, res) => {
         course[field] = req.body[field];
       }
     });
+
+    // Only admin can toggle isActive
+    if (isAdmin && req.body.isActive !== undefined) {
+      course.isActive = req.body.isActive === "true";
+    }
 
     await course.save();
 
@@ -676,10 +695,12 @@ export const updateCourse = async (req, res) => {
   }
 };
 
-// ✅ Delete Course
+// ✅ Delete Course (With Ownership Check)
 export const deleteCourse = async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = req.tokenData?.userId;
+    const userRole = req.tokenData?.role;
 
     if (!id) {
       return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
@@ -690,14 +711,15 @@ export const deleteCourse = async (req, res) => {
       return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
     }
 
-    const userId = req.tokenData?.userId;
-    const userRole = req.tokenData?.role;
+    // Check ownership and permissions
+    const isOwner = course.createdBy.toString() === userId;
+    const isAdmin = userRole === ROLE_MAP.ADMIN;
     
-    // ADMIN aur STREAMER dono ek dusre ke courses delete kar sakte hain
-    if (![ROLE_MAP.ADMIN, ROLE_MAP.STREAMER].includes(userRole)) {
-      return sendErrorResponse(res, "You are not authorized to delete courses", HttpStatus.FORBIDDEN);
+    if (!isOwner && !isAdmin) {
+      return sendErrorResponse(res, "You are not authorized to delete this course", HttpStatus.FORBIDDEN);
     }
 
+    // Delete files from S3
     if (course.thumbnail) {
       await deleteFileFromS3(course.thumbnail);
     }
@@ -735,61 +757,7 @@ export const deleteCourse = async (req, res) => {
   }
 };
 
-// ✅ Add Lecture to Course
-// export const addLecture = async (req, res) => {
-//   try {
-//     const { courseId } = req.params;
-//     const { title, type, duration, isPreviewFree } = req.body;
-
-//     if (!courseId || !title || !type) {
-//       return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
-//     }
-
-//     const course = await courseModel.findById(courseId);
-//     if (!course) {
-//       return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
-//     }
-
-//     const userId = req.tokenData?.userId;
-//     const userRole = req.tokenData?.role;
-    
-//     // ADMIN aur STREAMER dono ek dusre ke courses mein lectures add kar sakte hain
-//     if (![ROLE_MAP.ADMIN, ROLE_MAP.STREAMER].includes(userRole)) {
-//       return sendErrorResponse(res, "You are not authorized to add lectures to courses", HttpStatus.FORBIDDEN);
-//     }
-
-//     const fileData = req.files?.file?.[0];
-//     if (!fileData) {
-//       return sendErrorResponse(res, "Lecture file is required", HttpStatus.BAD_REQUEST);
-//     }
-
-//     const newLecture = {
-//       title: title.trim(),
-//       type: type,
-//       url: fileData.location || fileData.fileUrl,
-//       duration: duration ? parseInt(duration) : 0,
-//       isPreviewFree: isPreviewFree === "true" || isPreviewFree === true
-//     };
-
-//     course.lectures.push(newLecture);
-//     await course.save();
-
-//     const addedLecture = course.lectures[course.lectures.length - 1];
-    
-//     return sendSuccessResponse(
-//       res, 
-//       addedLecture, 
-//       "Lecture added successfully", 
-//       HttpStatus.CREATED
-//     );
-
-//   } catch (error) {
-//     console.error("❌ addLecture error:", error);
-//     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
-//   }
-// };
-
-
+// ✅ Add Lecture (With Ownership Check)
 export const addLecture = async (req, res) => {
   console.log("===========================================");
   console.log("🎬 [ADD LECTURE] CONTROLLER START");
@@ -797,6 +765,8 @@ export const addLecture = async (req, res) => {
   try {
     const { courseId } = req.params;
     const { title, type, duration, isPreviewFree } = req.body;
+    const userId = req.tokenData?.userId;
+    const userRole = req.tokenData?.role;
 
     console.log("📌 [PARAMS] courseId:", courseId);
     console.log("📋 [BODY] Received body:", {
@@ -822,33 +792,28 @@ export const addLecture = async (req, res) => {
     
     console.log(`✅ [DB] Course found: ${course.title}`);
 
-    // Authorization
-    const userId = req.tokenData?.userId;
-    const userRole = req.tokenData?.role;
+    // Check ownership and permissions
+    const isOwner = course.createdBy.toString() === userId;
+    const isAdmin = userRole === ROLE_MAP.ADMIN;
     
-    console.log(`👮 [AUTH] User ID: ${userId}, Role: ${userRole}`);
-    
-    if (![ROLE_MAP.ADMIN, ROLE_MAP.STREAMER].includes(userRole)) {
-      console.error(`❌ [AUTH] Unauthorized role: ${userRole}`);
-      return sendErrorResponse(res, "You are not authorized to add lectures to courses", HttpStatus.FORBIDDEN);
+    if (!isOwner && !isAdmin) {
+      console.error(`❌ [AUTH] Unauthorized user: ${userId}`);
+      return sendErrorResponse(res, "You are not authorized to add lectures to this course", HttpStatus.FORBIDDEN);
     }
 
-    // Get file URL - simplified approach
+    // Get file URL
     console.log("🔗 [FILE URL] Getting file URL...");
     
     let fileUrl = null;
     
-    // Option 1: Check req.fileUrls (from middleware)
     if (req.fileUrls && req.fileUrls.file && req.fileUrls.file.length > 0) {
       fileUrl = req.fileUrls.file[0].fileUrl;
       console.log("✅ [FILE URL] From req.fileUrls:", fileUrl);
     }
-    // Option 2: Check req.body.file (backup)
     else if (req.body.file && Array.isArray(req.body.file) && req.body.file.length > 0) {
       fileUrl = req.body.file[0].fileUrl;
       console.log("✅ [FILE URL] From req.body.file:", fileUrl);
     }
-    // Option 3: Check multer's files
     else if (req.files?.file?.[0]?.location) {
       fileUrl = req.files.file[0].location;
       console.log("✅ [FILE URL] From req.files:", fileUrl);
@@ -888,7 +853,6 @@ export const addLecture = async (req, res) => {
     const addedLecture = course.lectures[course.lectures.length - 1];
     console.log("✅ [DB] Lecture saved with ID:", addedLecture._id);
 
-    // Verify the lecture was added
     console.log(`📚 [VERIFY] Course now has ${course.lectures.length} lectures`);
     
     console.log("✅ [ADD LECTURE] COMPLETED SUCCESSFULLY");
@@ -916,10 +880,12 @@ export const addLecture = async (req, res) => {
   }
 };
 
-// ✅ Remove Lecture from Course
+// ✅ Remove Lecture (With Ownership Check)
 export const removeLecture = async (req, res) => {
   try {
     const { courseId, lectureId } = req.params;
+    const userId = req.tokenData?.userId;
+    const userRole = req.tokenData?.role;
 
     if (!courseId || !lectureId) {
       return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
@@ -930,12 +896,12 @@ export const removeLecture = async (req, res) => {
       return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
     }
 
-    const userId = req.tokenData?.userId;
-    const userRole = req.tokenData?.role;
+    // Check ownership and permissions
+    const isOwner = course.createdBy.toString() === userId;
+    const isAdmin = userRole === ROLE_MAP.ADMIN;
     
-    // ADMIN aur STREAMER dono ek dusre ke courses se lectures remove kar sakte hain
-    if (![ROLE_MAP.ADMIN, ROLE_MAP.STREAMER].includes(userRole)) {
-      return sendErrorResponse(res, "You are not authorized to remove lectures from courses", HttpStatus.FORBIDDEN);
+    if (!isOwner && !isAdmin) {
+      return sendErrorResponse(res, "You are not authorized to remove lectures from this course", HttpStatus.FORBIDDEN);
     }
 
     const lectureIndex = course.lectures.findIndex(
@@ -968,181 +934,174 @@ export const removeLecture = async (req, res) => {
   }
 };
 
-// ✅ Add Assignment to Course
-export const addAssignment = async (req, res) => {
+// ✅ Toggle Course Active Status (Admin Only)
+export const toggleCourseStatus = async (req, res) => {
   try {
-    const { courseId } = req.params;
-    const { title, description, dueDate } = req.body;
+    const { id } = req.params;
+    const { isActive } = req.body;
+    const userRole = req.tokenData?.role;
 
-    if (!courseId || !title) {
+    if (!id) {
       return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
     }
 
-    const course = await courseModel.findById(courseId);
+    // Only admin can toggle course status
+    if (userRole !== ROLE_MAP.ADMIN) {
+      return sendErrorResponse(res, "Only admin can toggle course status", HttpStatus.FORBIDDEN);
+    }
+
+    const course = await courseModel.findById(id);
     if (!course) {
       return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
     }
 
-    const userId = req.tokenData?.userId;
-    const userRole = req.tokenData?.role;
-    
-    // ADMIN aur STREAMER dono ek dusre ke courses mein assignments add kar sakte hain
-    if (![ROLE_MAP.ADMIN, ROLE_MAP.STREAMER].includes(userRole)) {
-      return sendErrorResponse(res, "You are not authorized to add assignments to courses", HttpStatus.FORBIDDEN);
-    }
-
-    const resourcesFiles = req.files?.resources || [];
-    if (resourcesFiles.length === 0) {
-      return sendErrorResponse(res, "At least one resource file is required", HttpStatus.BAD_REQUEST);
-    }
-
-    const resourceUrls = resourcesFiles.map(file => file.location || file.fileUrl);
-
-    const newAssignment = {
-      title: title.trim(),
-      description: description || "",
-      dueDate: dueDate || null,
-      resources: resourceUrls
-    };
-
-    course.assignments.push(newAssignment);
-    await course.save();
-
-    const addedAssignment = course.assignments[course.assignments.length - 1];
-    
-    return sendSuccessResponse(
-      res, 
-      addedAssignment, 
-      "Assignment added successfully", 
-      HttpStatus.CREATED
-    );
-
-  } catch (error) {
-    console.error("❌ addAssignment error:", error);
-    return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
-  }
-};
-
-// ✅ Remove Assignment from Course
-export const removeAssignment = async (req, res) => {
-  try {
-    const { courseId, assignmentId } = req.params;
-
-    if (!courseId || !assignmentId) {
-      return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
-    }
-
-    const course = await courseModel.findById(courseId);
-    if (!course) {
-      return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
-    }
-
-    const userId = req.tokenData?.userId;
-    const userRole = req.tokenData?.role;
-    
-    // ADMIN aur STREAMER dono ek dusre ke courses se assignments remove kar sakte hain
-    if (![ROLE_MAP.ADMIN, ROLE_MAP.STREAMER].includes(userRole)) {
-      return sendErrorResponse(res, "You are not authorized to remove assignments from courses", HttpStatus.FORBIDDEN);
-    }
-
-    const assignmentIndex = course.assignments.findIndex(
-      assignment => assignment._id.toString() === assignmentId
-    );
-
-    if (assignmentIndex === -1) {
-      return sendErrorResponse(res, "Assignment not found", HttpStatus.NOT_FOUND);
-    }
-
-    const assignmentToRemove = course.assignments[assignmentIndex];
-
-    if (assignmentToRemove.resources && assignmentToRemove.resources.length > 0) {
-      for (const resourceUrl of assignmentToRemove.resources) {
-        await deleteFileFromS3(resourceUrl);
-      }
-    }
-
-    course.assignments.splice(assignmentIndex, 1);
+    course.isActive = isActive === "true";
     await course.save();
 
     return sendSuccessResponse(
-      res, 
-      null, 
-      "Assignment removed successfully", 
+      res,
+      { isActive: course.isActive },
+      `Course ${course.isActive ? 'activated' : 'deactivated'} successfully`,
       HttpStatus.OK
     );
 
   } catch (error) {
-    console.error("❌ removeAssignment error:", error);
+    console.error("❌ toggleCourseStatus error:", error);
     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
 
-// // ✅ Enroll in Course
-// export const enrollInCourse = async (req, res) => {
-//   try {
-//     const { courseId } = req.params;
-//     const userId = req.tokenData?.userId;
+// ✅ Get Courses by Streamer
+export const getCoursesByStreamer = async (req, res) => {
+  try {
+    const { streamerId } = req.params;
+    const { page = 1, limit = 10 } = req.query;
+    const userRole = req.tokenData?.role;
+    const userId = req.tokenData?.userId;
+    
+    const skip = (page - 1) * limit;
 
-//     if (!courseId || !userId) {
-//       return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
-//     }
+    // Check permissions
+    if (userRole === ROLE_MAP.STREAMER && streamerId !== userId) {
+      return sendErrorResponse(res, "You can only view your own courses", HttpStatus.FORBIDDEN);
+    }
 
-//     const course = await courseModel.findById(courseId);
-//     if (!course) {
-//       return sendErrorResponse(res, "Course not found", HttpStatus.NOT_FOUND);
-//     }
+    const query = { createdBy: streamerId };
+    
+    // If viewer, only show active courses
+    if (userRole === ROLE_MAP.VIEWER) {
+      query.isActive = true;
+    }
 
-//     const user = await authenticationModel.findById(userId);
-//     if (!user) {
-//       return sendErrorResponse(res, "User not found", HttpStatus.NOT_FOUND);
-//     }
+    // Get total count
+    const total = await courseModel.countDocuments(query);
 
-//     const userRoleName = ROLE_REVERSE_MAP[req.tokenData?.role];
-//     if (userRoleName !== 'VIEWER') {
-//       return sendErrorResponse(res, "Only VIEWER users can enroll in courses", HttpStatus.FORBIDDEN);
-//     }
+    const courses = await courseModel
+      .find(query)
+      .populate("createdBy", "name email profilePic")
+      .populate("enrolledUsers.user", "name email")
+      .skip(skip)
+      .limit(parseInt(limit))
+      .sort({ createdAt: -1 })
+      .lean();
 
-//     const isAlreadyEnrolled = course.enrolledUsers.some(
-//       enrollment => enrollment.user && enrollment.user.toString() === userId
-//     );
+    if (!courses || courses.length === 0) {
+      return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
+    }
 
-//     if (isAlreadyEnrolled) {
-//       return sendErrorResponse(res, "You are already enrolled in this course", HttpStatus.CONFLICT);
-//     }
+    // Enrich courses with enrollment count
+    const enrichedCourses = courses.map(course => ({
+      ...course,
+      enrolledCount: course.enrolledUsers?.length || 0,
+      instructor: course.createdBy?.name || 'Unknown',
+      canEdit: userRole === ROLE_MAP.ADMIN || 
+               (userRole === ROLE_MAP.STREAMER && course.createdBy?._id?.toString() === userId),
+      canDelete: userRole === ROLE_MAP.ADMIN || 
+                 (userRole === ROLE_MAP.STREAMER && course.createdBy?._id?.toString() === userId)
+    }));
 
-//     course.enrolledUsers.push({
-//       user: new mongoose.Types.ObjectId(userId),
-//       enrolledAt: new Date(),
-//       progress: 0,
-//       completedLectures: [],
-//       lastAccessed: new Date()
-//     });
+    return sendSuccessResponse(
+      res,
+      {
+        courses: enrichedCourses,
+        streamer: courses[0]?.createdBy || null,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(total / limit),
+          totalItems: total,
+          itemsPerPage: parseInt(limit)
+        }
+      },
+      successEn.COURSE_FETCHED,
+      HttpStatus.OK
+    );
+  } catch (error) {
+    console.error("❌ getCoursesByStreamer error:", error);
+    return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+  }
+};
 
-//     await course.save();
+// ✅ Get Course Statistics
+export const getCourseStatistics = async (req, res) => {
+  try {
+    const userRole = req.tokenData?.role;
+    const userId = req.tokenData?.userId;
 
-//     const io = getIO();
-//     io.emit("user:enrolled", { 
-//       courseId: course._id, 
-//       userId: userId,
-//       userName: user.name,
-//       courseTitle: course.title 
-//     });
+    let query = {};
+    
+    if (userRole === ROLE_MAP.STREAMER) {
+      query.createdBy = userId;
+    }
 
-//     return sendSuccessResponse(
-//       res,
-//       { courseId, message: "Successfully enrolled in course" },
-//       "Enrolled successfully",
-//       HttpStatus.OK
-//     );
+    const totalCourses = await courseModel.countDocuments(query);
+    const activeCourses = await courseModel.countDocuments({ ...query, isActive: true });
+    const totalEnrollments = await courseModel.aggregate([
+      { $match: query },
+      { $unwind: "$enrolledUsers" },
+      { $count: "total" }
+    ]);
+    
+    const totalRevenue = await courseModel.aggregate([
+      { $match: query },
+      { $group: { _id: null, total: { $sum: "$price" } } }
+    ]);
 
-//   } catch (error) {
-//     console.error("❌ enrollInCourse error:", error);
-//     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
-//   }
-// };
+    const enrollmentTrend = await courseModel.aggregate([
+      { $match: query },
+      { $unwind: "$enrolledUsers" },
+      {
+        $group: {
+          _id: {
+            $dateToString: { format: "%Y-%m", date: "$enrolledUsers.enrolledAt" }
+          },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } },
+      { $limit: 12 }
+    ]);
 
+    return sendSuccessResponse(
+      res,
+      {
+        totalCourses,
+        activeCourses,
+        inactiveCourses: totalCourses - activeCourses,
+        totalEnrollments: totalEnrollments[0]?.total || 0,
+        totalRevenue: totalRevenue[0]?.total || 0,
+        enrollmentTrend,
+        averagePrice: totalCourses > 0 ? (totalRevenue[0]?.total || 0) / totalCourses : 0
+      },
+      "Course statistics fetched successfully",
+      HttpStatus.OK
+    );
+  } catch (error) {
+    console.error("❌ getCourseStatistics error:", error);
+    return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+  }
+};
 
-
+// ✅ Enroll in Course
 export const enrollInCourse = async (req, res) => {
   try {
     const { courseId } = req.params;
@@ -1172,6 +1131,11 @@ export const enrollInCourse = async (req, res) => {
       return sendErrorResponse(res, "Only VIEWER users can enroll in courses", HttpStatus.FORBIDDEN);
     }
 
+    // Check if course is active
+    if (!course.isActive) {
+      return sendErrorResponse(res, "This course is not currently available for enrollment", HttpStatus.BAD_REQUEST);
+    }
+
     const isAlreadyEnrolled = course.enrolledUsers.some(
       enrollment => enrollment.user && enrollment.user.toString() === userId
     );
@@ -1188,7 +1152,6 @@ export const enrollInCourse = async (req, res) => {
       lastAccessed: new Date()
     });
 
-    // ✅ Model में middleware की वजह से अब validation automatic होगा
     await course.save();
 
     const io = getIO();
@@ -1209,7 +1172,6 @@ export const enrollInCourse = async (req, res) => {
   } catch (error) {
     console.error("❌ enrollInCourse error:", error);
     
-    // ✅ Specific error handling
     if (error.name === 'ValidationError') {
       return sendErrorResponse(res, "Course validation failed. Please contact administrator.", HttpStatus.BAD_REQUEST);
     }
@@ -1217,6 +1179,7 @@ export const enrollInCourse = async (req, res) => {
     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
+
 // ✅ Unenroll from Course
 export const unenrollFromCourse = async (req, res) => {
   try {
@@ -1276,12 +1239,12 @@ export const getMyEnrolledCourses = async (req, res) => {
       return sendErrorResponse(res, "Only VIEWER users can view enrolled courses", HttpStatus.FORBIDDEN);
     }
 
-    // ✅ Fetch enrolled courses excluding liveClasses and enrolledUsers
     const enrolledCourses = await courseModel.find({
-      "enrolledUsers.user": userId
+      "enrolledUsers.user": userId,
+      isActive: true
     })
     .populate("createdBy", "name email")
-    .select("-enrolledUsers -liveClasses") // Exclude liveClasses
+    .select("-enrolledUsers -liveClasses")
     .lean();
 
     const coursesWithEnrollmentInfo = await Promise.all(
@@ -1321,27 +1284,33 @@ export const getEnrolledUsers = async (req, res) => {
   try {
     const { courseId } = req.params;
     const userRole = req.tokenData?.role;
-
-    if (![ROLE_MAP.ADMIN, ROLE_MAP.STREAMER].includes(userRole)) {
-      return sendErrorResponse(res, errorEn.UNAUTHORIZED, HttpStatus.FORBIDDEN);
-    }
+    const userId = req.tokenData?.userId;
 
     if (!courseId) {
       return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
     }
 
-    const course = await courseModel.findById(courseId)
+    const course = await courseModel.findById(courseId);
+    if (!course) {
+      return sendErrorResponse(res, "Course not found", HttpStatus.NOT_FOUND);
+    }
+
+    // Check permissions
+    const isOwner = course.createdBy.toString() === userId;
+    const isAdmin = userRole === ROLE_MAP.ADMIN;
+    
+    if (!isOwner && !isAdmin) {
+      return sendErrorResponse(res, "You are not authorized to view enrolled users", HttpStatus.FORBIDDEN);
+    }
+
+    const populatedCourse = await courseModel.findById(courseId)
       .populate({
         path: 'enrolledUsers.user',
         select: 'name email phone profilePic'
       })
       .select('enrolledUsers title');
 
-    if (!course) {
-      return sendErrorResponse(res, "Course not found", HttpStatus.NOT_FOUND);
-    }
-
-    const enrolledUsers = course.enrolledUsers.map(enrollment => ({
+    const enrolledUsers = populatedCourse.enrolledUsers.map(enrollment => ({
       user: enrollment.user,
       enrolledAt: enrollment.enrolledAt,
       progress: enrollment.progress,
@@ -1352,7 +1321,7 @@ export const getEnrolledUsers = async (req, res) => {
     return sendSuccessResponse(
       res,
       {
-        courseTitle: course.title,
+        courseTitle: populatedCourse.title,
         totalEnrolled: enrolledUsers.length,
         enrolledUsers
       },
@@ -1424,17 +1393,32 @@ export const updateCourseProgress = async (req, res) => {
   }
 };
 
-// ✅ Get all enrollments across all courses
+// ✅ Get all enrollments across all courses (Admin/Streamer)
 export const getAllEnrollments = async (req, res) => {
   try {
-    const courses = await courseModel.find()
+    const userRole = req.tokenData?.role;
+    const userId = req.tokenData?.userId;
+    const { page = 1, limit = 20 } = req.query;
+    
+    const skip = (page - 1) * limit;
+
+    let query = {};
+    
+    // Streamer can only see enrollments in their own courses
+    if (userRole === ROLE_MAP.STREAMER) {
+      query.createdBy = userId;
+    }
+
+    const courses = await courseModel.find(query)
       .populate({
         path: 'enrolledUsers.user',
         select: 'name email phone profilePic'
       })
       .populate('createdBy', 'name email')
-      .select('title description category level price duration thumbnail enrolledUsers createdAt')
-      .sort({ createdAt: -1 });
+      .select('title description category level price duration thumbnail enrolledUsers createdAt isActive')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
 
     let allEnrollments = [];
     let totalEnrollments = 0;
@@ -1453,6 +1437,7 @@ export const getAllEnrollments = async (req, res) => {
           coursePrice: course.price,
           courseDuration: course.duration,
           courseCreatedAt: course.createdAt,
+          courseIsActive: course.isActive,
           createdBy: course.createdBy,
           userId: enrollment.user?._id,
           userName: enrollment.user?.name,
@@ -1471,6 +1456,9 @@ export const getAllEnrollments = async (req, res) => {
         }
       });
     });
+
+    // Get total count for pagination
+    const total = await courseModel.countDocuments(query);
 
     const stats = {
       totalCourses: courses.length,
@@ -1495,8 +1483,16 @@ export const getAllEnrollments = async (req, res) => {
           category: c.category,
           level: c.level,
           thumbnail: c.thumbnail,
-          enrollments: c.enrolledUsers.length
-        }))
+          isActive: c.isActive,
+          enrollments: c.enrolledUsers.length,
+          createdBy: c.createdBy
+        })),
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(total / limit),
+          totalItems: total,
+          itemsPerPage: parseInt(limit)
+        }
       },
       "All enrollments fetched successfully",
       HttpStatus.OK
@@ -1520,13 +1516,17 @@ export const enrollUser = async (req, res) => {
       return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
     }
 
-    if (![ROLE_MAP.ADMIN, ROLE_MAP.STREAMER].includes(currentUserRole)) {
-      return sendErrorResponse(res, errorEn.UNAUTHORIZED, HttpStatus.FORBIDDEN);
-    }
-
+    // Check permissions
     const course = await courseModel.findById(courseId);
     if (!course) {
       return sendErrorResponse(res, "Course not found", HttpStatus.NOT_FOUND);
+    }
+
+    const isOwner = course.createdBy.toString() === currentUserId;
+    const isAdmin = currentUserRole === ROLE_MAP.ADMIN;
+    
+    if (!isOwner && !isAdmin) {
+      return sendErrorResponse(res, "You are not authorized to enroll users in this course", HttpStatus.FORBIDDEN);
     }
 
     const user = await authenticationModel.findById(userId);
@@ -1537,6 +1537,11 @@ export const enrollUser = async (req, res) => {
     const userRoleName = ROLE_REVERSE_MAP[user.role];
     if (userRoleName !== 'VIEWER') {
       return sendErrorResponse(res, "Only VIEWER users can be enrolled in courses", HttpStatus.BAD_REQUEST);
+    }
+
+    // Check if course is active
+    if (!course.isActive) {
+      return sendErrorResponse(res, "Cannot enroll users in an inactive course", HttpStatus.BAD_REQUEST);
     }
 
     const isAlreadyEnrolled = course.enrolledUsers.some(
@@ -1595,13 +1600,17 @@ export const unenrollUser = async (req, res) => {
       return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
     }
 
-    if (![ROLE_MAP.ADMIN, ROLE_MAP.STREAMER].includes(currentUserRole)) {
-      return sendErrorResponse(res, errorEn.UNAUTHORIZED, HttpStatus.FORBIDDEN);
-    }
-
+    // Check permissions
     const course = await courseModel.findById(courseId);
     if (!course) {
       return sendErrorResponse(res, "Course not found", HttpStatus.NOT_FOUND);
+    }
+
+    const isOwner = course.createdBy.toString() === currentUserId;
+    const isAdmin = currentUserRole === ROLE_MAP.ADMIN;
+    
+    if (!isOwner && !isAdmin) {
+      return sendErrorResponse(res, "You are not authorized to unenroll users from this course", HttpStatus.FORBIDDEN);
     }
 
     const enrollmentIndex = course.enrolledUsers.findIndex(
@@ -1641,5 +1650,507 @@ export const unenrollUser = async (req, res) => {
   } catch (error) {
     console.error("❌ unenrollUser error:", error);
     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+  }
+};
+
+
+// ✅ Add Assignment to Course (With Ownership Check)
+export const addAssignment = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const { title, description, dueDate } = req.body;
+    const userId = req.tokenData?.userId;
+    const userRole = req.tokenData?.role;
+
+    console.log("📋 [ADD ASSIGNMENT] Request received");
+    console.log("📌 Course ID:", courseId);
+    console.log("📝 Body:", { title, description, dueDate });
+
+    if (!courseId || !title) {
+      return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
+    }
+
+    const course = await courseModel.findById(courseId);
+    if (!course) {
+      return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
+    }
+
+    // Check ownership and permissions
+    const isOwner = course.createdBy.toString() === userId;
+    const isAdmin = userRole === ROLE_MAP.ADMIN;
+    
+    if (!isOwner && !isAdmin) {
+      return sendErrorResponse(res, "You are not authorized to add assignments to this course", HttpStatus.FORBIDDEN);
+    }
+
+    // Get resources files from uploaded files
+    const resourcesFiles = req.files?.resources || [];
+    console.log("📁 Uploaded files:", resourcesFiles);
+
+    if (resourcesFiles.length === 0) {
+      return sendErrorResponse(res, "At least one resource file is required", HttpStatus.BAD_REQUEST);
+    }
+
+    // Extract file URLs from uploaded files
+    const resourceUrls = resourcesFiles.map(file => {
+      if (file.location) return file.location;
+      if (file.fileUrl) return file.fileUrl;
+      return null;
+    }).filter(url => url !== null);
+
+    if (resourceUrls.length === 0) {
+      return sendErrorResponse(res, "Could not extract file URLs from uploaded files", HttpStatus.BAD_REQUEST);
+    }
+
+    const newAssignment = {
+      title: title.trim(),
+      description: description || "",
+      dueDate: dueDate ? new Date(dueDate) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // Default 7 days
+      resources: resourceUrls,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    console.log("📝 New assignment:", newAssignment);
+
+    course.assignments.push(newAssignment);
+    await course.save();
+
+    const addedAssignment = course.assignments[course.assignments.length - 1];
+    
+    console.log("✅ Assignment added successfully");
+    
+    return sendSuccessResponse(
+      res, 
+      addedAssignment, 
+      "Assignment added successfully", 
+      HttpStatus.CREATED
+    );
+
+  } catch (error) {
+    console.error("❌ addAssignment error:", error);
+    return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+  }
+};
+
+// ✅ Remove Assignment from Course (With Ownership Check)
+export const removeAssignment = async (req, res) => {
+  try {
+    const { courseId, assignmentId } = req.params;
+    const userId = req.tokenData?.userId;
+    const userRole = req.tokenData?.role;
+
+    console.log("🗑️ [REMOVE ASSIGNMENT] Request received");
+    console.log("📌 Course ID:", courseId);
+    console.log("📌 Assignment ID:", assignmentId);
+
+    if (!courseId || !assignmentId) {
+      return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
+    }
+
+    const course = await courseModel.findById(courseId);
+    if (!course) {
+      return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
+    }
+
+    // Check ownership and permissions
+    const isOwner = course.createdBy.toString() === userId;
+    const isAdmin = userRole === ROLE_MAP.ADMIN;
+    
+    if (!isOwner && !isAdmin) {
+      return sendErrorResponse(res, "You are not authorized to remove assignments from this course", HttpStatus.FORBIDDEN);
+    }
+
+    const assignmentIndex = course.assignments.findIndex(
+      assignment => assignment._id.toString() === assignmentId
+    );
+
+    if (assignmentIndex === -1) {
+      return sendErrorResponse(res, "Assignment not found", HttpStatus.NOT_FOUND);
+    }
+
+    const assignmentToRemove = course.assignments[assignmentIndex];
+    console.log("📝 Assignment to remove:", assignmentToRemove);
+
+    // Delete files from S3 if they exist
+    if (assignmentToRemove.resources && assignmentToRemove.resources.length > 0) {
+      for (const resourceUrl of assignmentToRemove.resources) {
+        try {
+          if (resourceUrl && typeof resourceUrl === 'string') {
+            await deleteFileFromS3(resourceUrl);
+            console.log("🗑️ Deleted file:", resourceUrl);
+          }
+        } catch (deleteError) {
+          console.error("⚠️ Error deleting file:", deleteError);
+          // Continue even if file deletion fails
+        }
+      }
+    }
+
+    course.assignments.splice(assignmentIndex, 1);
+    await course.save();
+
+    console.log("✅ Assignment removed successfully");
+    
+    return sendSuccessResponse(
+      res, 
+      null, 
+      "Assignment removed successfully", 
+      HttpStatus.OK
+    );
+
+  } catch (error) {
+    console.error("❌ removeAssignment error:", error);
+    return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+  }
+};
+
+
+
+export const getAllCoursesForAdmin = async (req, res) => {
+  try {
+    const userRole = req.tokenData?.role;
+    
+    // Only admin can access this dashboard
+    if (userRole !== ROLE_MAP.ADMIN) {
+      return sendErrorResponse(res, "Only admin can access dashboard", HttpStatus.FORBIDDEN);
+    }
+
+    const { 
+      page = 1, 
+      limit = 20, 
+      streamerId, 
+      status, 
+      category,
+      level,
+      search,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = req.query;
+    
+    const skip = (page - 1) * limit;
+
+    // Build query for admin
+    let query = {};
+    
+    // Filter by streamer
+    if (streamerId) {
+      query.createdBy = streamerId;
+    }
+    
+    // Filter by status
+    if (status === 'active') {
+      query.isActive = true;
+    } else if (status === 'inactive') {
+      query.isActive = false;
+    }
+    
+    // Filter by category
+    if (category) {
+      query.category = category;
+    }
+    
+    // Filter by level
+    if (level) {
+      query.level = level;
+    }
+    
+    // Search filter
+    if (search) {
+      query.$or = [
+        { title: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { tags: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    // Sort options
+    const sortOptions = {};
+    sortOptions[sortBy] = sortOrder === 'desc' ? -1 : 1;
+
+    // Get total count
+    const total = await courseModel.countDocuments(query);
+
+    // Get courses with streamer info (सिर्फ enrolled count, details नहीं)
+    const courses = await courseModel
+      .find(query)
+      .populate({
+        path: 'createdBy',
+        select: 'name email profilePic phone role'
+      })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .sort(sortOptions)
+      .lean();
+
+    if (!courses || courses.length === 0) {
+      return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
+    }
+
+    // Enrich courses with basic information
+    const enrichedCourses = courses.map(course => {
+      const enrolledCount = course.enrolledUsers?.length || 0;
+      const totalRevenue = course.price * enrolledCount;
+      
+      return {
+        _id: course._id,
+        title: course.title,
+        description: course.description,
+        thumbnail: course.thumbnail,
+        category: course.category,
+        level: course.level,
+        price: course.price,
+        isActive: course.isActive,
+        duration: course.duration,
+        language: course.language,
+        tags: course.tags,
+        rating: course.rating,
+        createdAt: course.createdAt,
+        updatedAt: course.updatedAt,
+        
+        // सिर्फ enrolled count, detailed enrollment info नहीं
+        enrolledCount: enrolledCount,
+        totalRevenue: totalRevenue,
+        
+        // Streamer information
+        streamer: {
+          _id: course.createdBy?._id,
+          name: course.createdBy?.name || 'Unknown',
+          email: course.createdBy?.email,
+          profilePic: course.createdBy?.profilePic,
+          phone: course.createdBy?.phone,
+          role: course.createdBy?.role
+        },
+        
+        // Basic stats (सिर्फ numbers)
+        stats: {
+          enrolledCount: enrolledCount,
+          totalRevenue: totalRevenue,
+          lecturesCount: course.lectures?.length || 0,
+          assignmentsCount: course.assignments?.length || 0,
+          quizzesCount: course.quizzes?.length || 0,
+          liveClassesCount: course.liveClasses?.length || 0
+        }
+      };
+    });
+
+    // Get aggregated statistics (सिर्फ counts)
+    const stats = await getAdminDashboardStats();
+
+    return sendSuccessResponse(
+      res,
+      {
+        courses: enrichedCourses,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(total / limit),
+          totalItems: total,
+          itemsPerPage: parseInt(limit)
+        },
+        filters: {
+          streamerId,
+          status,
+          category,
+          level,
+          search,
+          sortBy,
+          sortOrder
+        },
+        stats
+      },
+      "Admin dashboard data fetched successfully",
+      HttpStatus.OK
+    );
+  } catch (error) {
+    console.error("❌ getAdminDashboard error:", error);
+    return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+  }
+};
+
+
+const getAdminDashboardStats = async () => {
+  try {
+    // Get total courses count
+    const totalCourses = await courseModel.countDocuments();
+    const activeCourses = await courseModel.countDocuments({ isActive: true });
+    const inactiveCourses = totalCourses - activeCourses;
+
+    // Get total enrollments (सिर्फ count)
+    const enrollmentsAgg = await courseModel.aggregate([
+      { $unwind: "$enrolledUsers" },
+      { $count: "total" }
+    ]);
+    const totalEnrollments = enrollmentsAgg[0]?.total || 0;
+
+    // Get total revenue
+    const revenueAgg = await courseModel.aggregate([
+      {
+        $project: {
+          courseRevenue: {
+            $multiply: ["$price", { $size: "$enrolledUsers" }]
+          }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: "$courseRevenue" }
+        }
+      }
+    ]);
+    const totalRevenue = revenueAgg[0]?.totalRevenue || 0;
+
+    // Get courses by category (सिर्फ counts)
+    const coursesByCategory = await courseModel.aggregate([
+      { $group: { _id: "$category", count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]);
+
+    // Get courses by level (सिर्फ counts)
+    const coursesByLevel = await courseModel.aggregate([
+      { $group: { _id: "$level", count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]);
+
+    // Get top 5 courses by enrollments (सिर्फ counts)
+    const topCoursesByEnrollments = await courseModel.aggregate([
+      {
+        $project: {
+          title: 1,
+          category: 1,
+          level: 1,
+          price: 1,
+          thumbnail: 1,
+          isActive: 1,
+          createdBy: 1,
+          enrolledCount: { $size: "$enrolledUsers" },
+          revenue: { $multiply: ["$price", { $size: "$enrolledUsers" }] }
+        }
+      },
+      { $sort: { enrolledCount: -1 } },
+      { $limit: 5 }
+    ]);
+
+    // Populate streamer names for top courses
+    if (topCoursesByEnrollments.length > 0) {
+      const streamerIds = topCoursesByEnrollments.map(course => course.createdBy);
+      const streamers = await authenticationModel.find(
+        { _id: { $in: streamerIds } },
+        'name email'
+      ).lean();
+
+      const streamerMap = streamers.reduce((map, streamer) => {
+        map[streamer._id.toString()] = streamer;
+        return map;
+      }, {});
+
+      topCoursesByEnrollments.forEach(course => {
+        course.streamerName = streamerMap[course.createdBy?.toString()]?.name || 'Unknown';
+      });
+    }
+
+    // Get streamer count and their courses count (सिर्फ counts)
+    const streamerStats = await courseModel.aggregate([
+      {
+        $group: {
+          _id: "$createdBy",
+          coursesCount: { $sum: 1 },
+          enrollmentsCount: { $sum: { $size: "$enrolledUsers" } },
+          totalRevenue: {
+            $sum: { $multiply: ["$price", { $size: "$enrolledUsers" }] }
+          }
+        }
+      },
+      { $sort: { coursesCount: -1 } },
+      { $limit: 10 }
+    ]);
+
+    // Populate streamer names
+    if (streamerStats.length > 0) {
+      const streamerIds = streamerStats.map(stat => stat._id);
+      const streamers = await authenticationModel.find(
+        { _id: { $in: streamerIds } },
+        'name email'
+      ).lean();
+
+      const streamerMap = streamers.reduce((map, streamer) => {
+        map[streamer._id.toString()] = streamer;
+        return map;
+      }, {});
+
+      streamerStats.forEach(stat => {
+        const streamer = streamerMap[stat._id.toString()];
+        stat.streamerName = streamer?.name || 'Unknown';
+        stat.streamerEmail = streamer?.email || '';
+      });
+    }
+
+    // Get total streamers count
+    const totalStreamers = await authenticationModel.countDocuments({ role: ROLE_MAP.STREAMER });
+
+    // Get enrollments by month (last 6 months) - सिर्फ counts
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+    const enrollmentsByMonth = await courseModel.aggregate([
+      { $unwind: "$enrolledUsers" },
+      { $match: { "enrolledUsers.enrolledAt": { $gte: sixMonthsAgo } } },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$enrolledUsers.enrolledAt" },
+            month: { $month: "$enrolledUsers.enrolledAt" }
+          },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1 } },
+      { $limit: 6 }
+    ]);
+
+    // Format enrollments by month
+    const formattedEnrollmentsByMonth = enrollmentsByMonth.map(item => ({
+      month: `${item._id.year}-${item._id.month.toString().padStart(2, '0')}`,
+      count: item.count
+    }));
+
+    return {
+      overview: {
+        totalCourses,
+        activeCourses,
+        inactiveCourses,
+        totalEnrollments,
+        totalRevenue,
+        totalStreamers,
+        averageEnrollmentsPerCourse: totalCourses > 0 ? (totalEnrollments / totalCourses).toFixed(2) : 0,
+        averageRevenuePerCourse: totalCourses > 0 ? (totalRevenue / totalCourses).toFixed(2) : 0,
+        averageCoursesPerStreamer: totalStreamers > 0 ? (totalCourses / totalStreamers).toFixed(2) : 0
+      },
+      categories: coursesByCategory,
+      levels: coursesByLevel,
+      enrollmentsTrend: formattedEnrollmentsByMonth,
+      topCourses: topCoursesByEnrollments,
+      topStreamers: streamerStats
+    };
+  } catch (error) {
+    console.error("❌ getAdminDashboardStats error:", error);
+    return {
+      overview: {
+        totalCourses: 0,
+        activeCourses: 0,
+        inactiveCourses: 0,
+        totalEnrollments: 0,
+        totalRevenue: 0,
+        totalStreamers: 0,
+        averageEnrollmentsPerCourse: 0,
+        averageRevenuePerCourse: 0,
+        averageCoursesPerStreamer: 0
+      },
+      categories: [],
+      levels: [],
+      enrollmentsTrend: [],
+      topCourses: [],
+      topStreamers: []
+    };
   }
 };

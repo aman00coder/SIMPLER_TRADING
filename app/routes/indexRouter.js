@@ -9,11 +9,8 @@ import livSessionWhiteBoardRoutes from "./liveSessionWhiteBoard/liveSessionWhite
 import liveChatRoutes from "./liveChat/liveChat.routes.js"
 import courseRoutes from "./course/course.routes.js"
 import courseLiveSessionRoutes from "./courseLiveSession/courseLiveSession.routes.js"
-import adminStreamerRoutes from "./admin/streamer/streamer.admin.routes.js";
-
-
-
-router.use("/admin/streamer", adminStreamerRoutes);
+import adminRoutes from "./Admin/admin.routes.js"
+import streamerRoutes from "./streamer/streamer.routes.js"
 router.use("/auth", authenticationRoutes);
 router.use("/whiteboard", whiteBoardRoutes);
 router.use("/liveSession", liveSessionRoutes);
@@ -22,6 +19,9 @@ router.use("/liveSessionWhiteboard", livSessionWhiteBoardRoutes);
 router.use("/liveChat", liveChatRoutes);
 router.use("/course", courseRoutes);
 router.use("/courseLiveSession", courseLiveSessionRoutes);
+router.use("/admin", adminRoutes);
+router.use("/streamer", streamerRoutes);
+
 
 export default router;
 

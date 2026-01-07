@@ -53,35 +53,12 @@ export const verifyToken = async (req, res, next) => {
 
     next();
   } catch (error) {
-
-    if (error.name === 'TokenExpiredError') {
-  return sendErrorResponse(res, errorEn.TOKEN_EXPIRED, HttpStatus.UNAUTHORIZED); // 401
-}
-
-if (error.name === 'JsonWebTokenError') {
-  return sendErrorResponse(res, errorEn.TOKEN_INVALID, HttpStatus.FORBIDDEN); // 403
-}
     console.error("Token Verification Error:", error.message);
     return sendErrorResponse(res, errorEn.TOKEN_INVALID, HttpStatus.FORBIDDEN);
   }
 };
 
-// export const checkRole = (allowedRoles = []) => {
-//   return (req, res, next) => {
-//     const roleName = req.tokenData?.roleName; // 👈 STRING (ADMIN)
-
-//     if (!allowedRoles.includes(roleName)) {
-//       return sendErrorResponse(
-//         res,
-//         "Access denied: insufficient permissions",
-//         HttpStatus.FORBIDDEN
-//       );
-//     }
-//     next();
-//   };
-// };
-
-
+// ✅ Role Checking Middleware
 export const checkRole = (allowedRoles = []) => {
   return (req, res, next) => {
     const userRole = req.tokenData?.role;
