@@ -986,9 +986,11 @@
 
 
 
+// middleware/aws.s3.js
 
 import AWS from 'aws-sdk';
 import multer from 'multer';
+import fs from 'fs';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -1024,11 +1026,86 @@ const sanitizeFileName = (fileName) => {
     return fileName.replace(/\s+/g, '_').replace(/[^\w.-]/g, '');
 };
 
-// Upload File to S3
-export const uploadToS3 = async (file, apiFolder = '') => { 
+// ================================
+// UPLOAD FUNCTIONS
+// ================================
+
+// Upload File to S3 (from local file path)
+export const uploadToS3FromPath = async (filePath, sessionId, apiFolder = 'recordings') => {
     const bucketName = process.env.AWS_S3_BUCKET_NAME;
+    
+    try {
+        // Extract file extension
+        const fileExtension = filePath.split('.').pop().toLowerCase();
+        const contentType = getContentType(fileExtension);
+        
+        const sanitizedSessionId = sanitizeFileName(sessionId);
+        const fileKey = apiFolder ? `${apiFolder}/${Date.now()}_${sanitizedSessionId}.${fileExtension}` : 
+                                    `${Date.now()}_${sanitizedSessionId}.${fileExtension}`;
+
+        const params = {
+            Bucket: bucketName,
+            Key: fileKey,
+            Body: fs.createReadStream(filePath),
+            ContentType: contentType
+        };
+
+        const uploadResult = await s3.upload(params).promise();
+        const fileUrl = `https://${bucketName}.s3.${process.env.AWS_REGION}.amazonaws.com/${fileKey}`;
+
+        console.log(`✅ [UPLOAD SUCCESS] File Uploaded from path: ${fileUrl}`);
+        
+        // Return both URL and S3 response
+        return {
+            fileUrl: fileUrl,
+            s3Response: uploadResult,
+            fileKey: fileKey,
+            bucketName: bucketName
+        };
+    } catch (error) {
+        console.error(`❌ [ERROR] Upload from path Failed: ${error.message}`);
+        throw new Error('File upload from path failed');
+    }
+};
+
+// Helper function to determine content type
+const getContentType = (fileExtension) => {
+    const contentTypeMap = {
+        'mp4': 'video/mp4',
+        'mp3': 'audio/mpeg',
+        'wav': 'audio/wav',
+        'webm': 'video/webm',
+        'pdf': 'application/pdf',
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'png': 'image/png',
+        'gif': 'image/gif',
+        'txt': 'text/plain',
+        'doc': 'application/msword',
+        'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'xls': 'application/vnd.ms-excel',
+        'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'ppt': 'application/vnd.ms-powerpoint',
+        'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    };
+
+    return contentTypeMap[fileExtension] || 'application/octet-stream';
+};
+
+// Upload File to S3 (for multer files - for backward compatibility)
+export const uploadToS3 = async (file, apiFolder = '') => {
+    const bucketName = process.env.AWS_S3_BUCKET_NAME;
+    
+    // Check if file is a multer file object or a path string
+    if (typeof file === 'string') {
+        // If it's a string path, use the path-based function
+        return uploadToS3FromPath(file, Date.now().toString(), apiFolder);
+    }
+    
+    // Original multer-based upload logic
     const sanitizedFileName = sanitizeFileName(file.originalname);
-    const fileKey = apiFolder ? `${apiFolder}/${Date.now()}_${sanitizedFileName}` : `${Date.now()}_${sanitizedFileName}`;
+    const fileKey = apiFolder ? `${apiFolder}/${Date.now()}_${sanitizedFileName}` : 
+                                `${Date.now()}_${sanitizedFileName}`;
 
     try {
         const params = {
@@ -1038,45 +1115,37 @@ export const uploadToS3 = async (file, apiFolder = '') => {
             ContentType: file.mimetype
         };
 
-        await s3.upload(params).promise();
+        const uploadResult = await s3.upload(params).promise();
         const fileUrl = `https://${bucketName}.s3.${process.env.AWS_REGION}.amazonaws.com/${fileKey}`;
 
         console.log(`✅ [UPLOAD SUCCESS] File Uploaded: ${fileUrl}`);
-        return fileUrl;
+        
+        // Return object to match uploadToS3FromPath format
+        return {
+            fileUrl: fileUrl,
+            s3Response: uploadResult,
+            fileKey: fileKey,
+            bucketName: bucketName
+        };
     } catch (error) {
         console.error(`❌ [ERROR] Upload Failed: ${error.message}`);
         throw new Error('File upload failed');
     }
 };
 
-// Delete File from S3
-export const deleteFileFromS3 = async (fileUrl) => {
-    const bucketName = process.env.AWS_S3_BUCKET_NAME;
-
-    try {
-        if (!fileUrl || typeof fileUrl !== 'string' || !fileUrl.startsWith('http')) {
-            console.error('❌ [ERROR] Invalid or missing fileUrl:', fileUrl);
-            return;
-        }
-
-        const url = new URL(fileUrl);
-        const fileKey = decodeURIComponent(url.pathname.slice(1)); // Removes leading "/"
-
-        if (!fileKey) {
-            console.error('❌ [ERROR] File key extraction failed.');
-            return;
-        }
-
-        const deleteParams = { Bucket: bucketName, Key: fileKey };
-
-        await s3.deleteObject(deleteParams).promise();
-        console.log(`✅ [DELETE SUCCESS] File deleted from S3: ${fileKey}`);
-    } catch (error) {
-        console.error(`❌ [ERROR] Failed to delete file from S3: ${error.message}`);
-        throw new Error('File delete failed');
-    }
+// Specific function for session recordings (your original use case)
+export const uploadSessionRecording = async (filePath, sessionId) => {
+    const result = await uploadToS3FromPath(filePath, sessionId, 'recordings');
+    return {
+        fileUrl: result.fileUrl,
+        s3Response: result.s3Response,
+        fileKey: result.fileKey
+    };
 };
 
+// ================================
+// MULTER MIDDLEWARES (uploadFile और uploadSingleFile)
+// ================================
 
 export const uploadSingleFile = (fieldName) => {
     return async (req, res, next) => {
@@ -1099,7 +1168,8 @@ export const uploadSingleFile = (fieldName) => {
             try {
                 console.log(`📁 [PROCESSING] Uploading single file: ${req.file.originalname}`);
                 const folderName = 'lectures'; // या जो भी folder चाहिए
-                const uploadedFileUrl = await uploadToS3(req.file, folderName);
+                const uploadResult = await uploadToS3(req.file, folderName);
+                const uploadedFileUrl = uploadResult.fileUrl;
                 
                 console.log(`✅ [UPLOADED SINGLE] File URL: ${uploadedFileUrl}`);
 
@@ -1133,8 +1203,6 @@ export const uploadSingleFile = (fieldName) => {
     };
 };
 
-
-// middleware में console.log जोड़ें:
 export const uploadFile = (fields) => {
     return (req, res, next) => {
         const uploadMiddleware = upload.fields(fields);
@@ -1163,7 +1231,8 @@ export const uploadFile = (fields) => {
 
                         for (const file of req.files[field.name]) {
                             console.log(`📁 [PROCESSING] Uploading file: ${file.originalname}`);
-                            const uploadedFileUrl = await uploadToS3(file, folderName);
+                            const uploadResult = await uploadToS3(file, folderName);
+                            const uploadedFileUrl = uploadResult.fileUrl;
                             
                             console.log(`✅ [UPLOADED] File URL: ${uploadedFileUrl}`);
 
@@ -1213,7 +1282,99 @@ export const uploadFile = (fields) => {
     };
 };
 
+// ================================
+// DELETE FUNCTION
+// ================================
 
+// Delete File from S3
+export const deleteFileFromS3 = async (fileUrl) => {
+    const bucketName = process.env.AWS_S3_BUCKET_NAME;
+
+    try {
+        if (!fileUrl || typeof fileUrl !== 'string' || !fileUrl.startsWith('http')) {
+            console.error('❌ [ERROR] Invalid or missing fileUrl:', fileUrl);
+            return;
+        }
+
+        const url = new URL(fileUrl);
+        const fileKey = decodeURIComponent(url.pathname.slice(1)); // Removes leading "/"
+
+        if (!fileKey) {
+            console.error('❌ [ERROR] File key extraction failed.');
+            return;
+        }
+
+        const deleteParams = { Bucket: bucketName, Key: fileKey };
+
+        await s3.deleteObject(deleteParams).promise();
+        console.log(`✅ [DELETE SUCCESS] File deleted from S3: ${fileKey}`);
+        return { success: true, fileKey };
+    } catch (error) {
+        console.error(`❌ [ERROR] Failed to delete file from S3: ${error.message}`);
+        throw new Error('File delete failed');
+    }
+};
+
+// ================================
+// UTILITY FUNCTIONS
+// ================================
+
+// Optional: Function to upload multiple files from paths
+export const uploadMultipleFilesFromPaths = async (files, apiFolder = '') => {
+    const results = [];
+    
+    for (const file of files) {
+        try {
+            const result = await uploadToS3FromPath(
+                file.path || file.filePath,
+                file.name || file.fileName || Date.now().toString(),
+                apiFolder || file.folder
+            );
+            results.push(result);
+        } catch (error) {
+            console.error(`❌ [ERROR] Failed to upload file: ${error.message}`);
+            // Continue with other files even if one fails
+            results.push({ error: error.message, file: file });
+        }
+    }
+    
+    return results;
+};
+
+// Extract file key from S3 URL
+export const extractFileKeyFromUrl = (fileUrl) => {
+    try {
+        if (!fileUrl || typeof fileUrl !== 'string' || !fileUrl.startsWith('http')) {
+            return null;
+        }
+
+        const url = new URL(fileUrl);
+        return decodeURIComponent(url.pathname.slice(1));
+    } catch (error) {
+        console.error('❌ [ERROR] Failed to extract file key:', error.message);
+        return null;
+    }
+};
+
+// Check if file exists in S3
+export const checkFileExistsInS3 = async (fileKey) => {
+    const bucketName = process.env.AWS_S3_BUCKET_NAME;
+    
+    try {
+        const params = {
+            Bucket: bucketName,
+            Key: fileKey
+        };
+        
+        await s3.headObject(params).promise();
+        return true;
+    } catch (error) {
+        if (error.code === 'NotFound') {
+            return false;
+        }
+        throw error;
+    }
+};
 
 
 
