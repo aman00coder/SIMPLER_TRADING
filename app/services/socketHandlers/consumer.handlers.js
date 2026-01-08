@@ -63,7 +63,9 @@ const createWebRtcTransportHandler = async (socket, sessionId, callback) => {
       enableUdp: true,
       enableTcp: true,
       preferUdp: true,
-      initialAvailableOutgoingBitrate: process.env.NODE_ENV === "production" ? 500000 : 1000000,
+      // initialAvailableOutgoingBitrate: process.env.NODE_ENV === "production" ? 500000 : 1000000,
+      initialAvailableOutgoingBitrate: 2000000
+
     });
 
     transport.on("dtlsstatechange", (dtlsState) => {
