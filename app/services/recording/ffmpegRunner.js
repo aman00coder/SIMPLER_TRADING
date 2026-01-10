@@ -1,25 +1,23 @@
 import { spawn } from "child_process";
 
 export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
+
   const args = [
     "-y",
 
-    // 🔥 RTP stability
-    "-fflags", "+genpts+igndts",
-    "-flags", "low_delay",
-    "-strict", "experimental",
-    "-rtbufsize", "150M",
-    "-max_delay", "500000",
+    "-loglevel", "warning",
+    "-stats",
 
-    "-analyzeduration", "30000000",
-    "-probesize", "30000000",
+    "-fflags", "+genpts",
+    "-use_wallclock_as_timestamps", "1",
 
-    // ================= VIDEO =================
+    "-analyzeduration", "20000000",
+    "-probesize", "20000000",
+
     "-protocol_whitelist", "file,udp,rtp,pipe",
     "-i", videoSdp
   ];
 
-  // ================= AUDIO =================
   audioSdps.forEach(sdp => {
     args.push(
       "-protocol_whitelist", "file,udp,rtp,pipe",
@@ -27,7 +25,6 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     );
   });
 
-  // ================= MAPPING =================
   if (audioSdps.length > 0) {
     args.push(
       "-filter_complex",
@@ -39,22 +36,15 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     args.push("-map", "0:v");
   }
 
-  // ================= OUTPUT =================
   args.push(
-    // 🔥 FORCE SIZE (fix 0x0 issue)
-    "-vf", "scale=1280:720",
-
-    "-fps_mode", "cfr",
-    "-r", "30",
-
     "-c:v", "libx264",
     "-preset", "veryfast",
-    "-tune", "zerolatency",
-    "-profile:v", "baseline",
     "-pix_fmt", "yuv420p",
+    "-profile:v", "baseline",
+    "-r", "30",
 
     "-c:a", "aac",
-    "-ar", "48000",
+    "-b:a", "128k",
 
     "-movflags", "+faststart",
     output
