@@ -1,26 +1,34 @@
 import { spawn } from "child_process";
 
 export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
+
   const args = [
     "-y",
 
-    // 🔥 MUST for VP8 + SDP
+    // ⏱ timing / rtp safe flags
+    "-use_wallclock_as_timestamps", "1",
     "-fflags", "+genpts",
-    "-protocol_whitelist", "file,udp,rtp,pipe",
+    "-flags", "low_delay",
 
-    // 🔥 FORCE video size (VERY IMPORTANT)
-    "-video_size", "1280x720",
+    "-analyzeduration", "15000000",
+    "-probesize", "15000000",
+
+    // 🔥 IMPORTANT: whitelist BEFORE EVERY -i
+    "-protocol_whitelist", "file,udp,rtp,pipe",
 
     // 🎥 video input
     "-i", videoSdp
   ];
 
-  // 🎙 audio inputs
+  // 🎙 audio inputs (EACH needs whitelist)
   audioSdps.forEach(sdp => {
-    args.push("-i", sdp);
+    args.push(
+      "-protocol_whitelist", "file,udp,rtp,pipe",
+      "-i", sdp
+    );
   });
 
-  // 🔊 mix audio
+  // 🔊 audio mix
   if (audioSdps.length > 0) {
     args.push(
       "-filter_complex",
@@ -33,7 +41,8 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   }
 
   args.push(
-    // 🔥 encoder settings
+    // 🔥 FORCE SIZE (VP8 fix)
+    "-vf", "scale=1280:720",
     "-pix_fmt", "yuv420p",
     "-r", "30",
 
