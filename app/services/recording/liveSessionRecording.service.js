@@ -9,18 +9,25 @@ import { startFFmpeg } from "./ffmpegRunner.js";
  */
 const waitForVideoProducer = async (state, timeout = 8000) => {
   const start = Date.now();
+
   while (Date.now() - start < timeout) {
-    const videoProducer = [...state.producers.values()].find(p => p.kind === "video");
+    const videoProducer = [...state.producers.values()]
+      .find(p => p.kind === "video");
+
     if (videoProducer) return videoProducer;
+
     await new Promise(r => setTimeout(r, 100));
   }
+
   throw new Error("No video producer found (timeout)");
 };
 
 export const startLiveRecording = async ({ state, router, sessionId }) => {
 
   const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
-  if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
+  if (!fs.existsSync(TMP_DIR)) {
+    fs.mkdirSync(TMP_DIR, { recursive: true });
+  }
 
   // ================= VIDEO =================
   const videoTransport = await router.createPlainTransport({
@@ -37,9 +44,13 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     paused: false
   });
 
-  // ✅ IMPORTANT
+  // ✅ resume consumer
   await videoConsumer.resume();
-  await videoProducer.requestKeyFrame();
+
+  // ✅ CORRECT KEYFRAME REQUEST (FIX)
+  if (videoConsumer.requestKeyFrame) {
+    await videoConsumer.requestKeyFrame();
+  }
 
   // ================= AUDIO =================
   const audioConsumers = [];
@@ -96,6 +107,7 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     output: outputFile
   });
 
+  // ================= SAVE STATE =================
   state.recording = {
     videoTransport,
     audioTransports,
