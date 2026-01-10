@@ -6,97 +6,92 @@ import { startFFmpeg } from "./ffmpegRunner.js";
 
 export const startLiveRecording = async ({ state, router, sessionId }) => {
 
-  // 🔹 temp dir
   const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
   if (!fs.existsSync(TMP_DIR)) {
     fs.mkdirSync(TMP_DIR, { recursive: true });
   }
 
-  // 🔹 create plain transport
-  const transport = await router.createPlainTransport({
+  // 🔥 SEPARATE TRANSPORT FOR VIDEO
+  const videoTransport = await router.createPlainTransport({
     listenIp: { ip: "127.0.0.1" },
-    rtcpMux: false,
+    rtcpMux: true,
     comedia: true
   });
 
-  // ✅ IMPORTANT: connect transport (RTP flow)
-  await transport.connect({
-    ip: "127.0.0.1",
-    port: transport.tuple.localPort,
-    rtcpPort: transport.tuple.localPort + 1
-  });
-
-  // 🎥 video producer
   const videoProducer = [...state.producers.values()]
     .find(p => p.kind === "video");
 
   if (!videoProducer) {
-    throw new Error("No video producer found for recording");
+    throw new Error("No video producer found");
   }
 
-  const videoConsumer = await transport.consume({
+  const videoConsumer = await videoTransport.consume({
     producerId: videoProducer.id,
     rtpCapabilities: router.rtpCapabilities
   });
 
-  // 🎙 audio producers
+  // 🔥 SEPARATE TRANSPORTS FOR AUDIO
   const audioConsumers = [];
+  const audioTransports = [];
+
   for (const producer of state.producers.values()) {
     if (producer.kind === "audio") {
-      const consumer = await transport.consume({
+      const audioTransport = await router.createPlainTransport({
+        listenIp: { ip: "127.0.0.1" },
+        rtcpMux: true,
+        comedia: true
+      });
+
+      const consumer = await audioTransport.consume({
         producerId: producer.id,
         rtpCapabilities: router.rtpCapabilities
       });
-      audioConsumers.push(consumer);
+
+      audioTransports.push(audioTransport);
+      audioConsumers.push({ consumer, transport: audioTransport });
     }
   }
 
-  // ✅ IMPORTANT: resume consumers
-  await videoConsumer.resume();
-  for (const c of audioConsumers) {
-    await c.resume();
-  }
-
-  // 🔹 SDP paths
+  // 🔹 SDP FILES
   const base = path.join(TMP_DIR, `session-${sessionId}`);
   const videoSdp = `${base}-video.sdp`;
   const audioSdps = audioConsumers.map((_, i) => `${base}-audio-${i}.sdp`);
 
-  // 🎥 video SDP
+  // 🎥 VIDEO SDP (UNIQUE PORT)
   saveSDPFile(videoSdp, generateSDP({
     ip: "127.0.0.1",
-    port: transport.tuple.localPort,
+    port: videoTransport.tuple.localPort,
     payloadType: 96,
     codec: "VP8/90000",
     kind: "video"
   }));
 
-  // 🎙 audio SDP(s)
-  audioSdps.forEach((file, i) => {
-    saveSDPFile(file, generateSDP({
+  // 🎙 AUDIO SDPs (UNIQUE PORT EACH)
+  audioConsumers.forEach((item, i) => {
+    saveSDPFile(audioSdps[i], generateSDP({
       ip: "127.0.0.1",
-      port: transport.tuple.localPort + i + 1,
+      port: item.transport.tuple.localPort,
       payloadType: 111,
       codec: "opus/48000/2",
       kind: "audio"
     }));
   });
 
-  // 🎬 output file
+  // 🎬 OUTPUT
   const outputFile = `${base}.mp4`;
 
-  // ▶ start ffmpeg
   const ffmpegProcess = startFFmpeg({
     videoSdp,
     audioSdps,
     output: outputFile
   });
 
-  // 🔹 save recording state
+  // 🔹 SAVE STATE
   state.recording = {
-    transport,
+    videoTransport,
+    audioTransports,
     videoConsumer,
-    audioConsumers,
+    audioConsumers: audioConsumers.map(a => a.consumer),
     ffmpegProcess,
     filePath: outputFile,
     startTime: new Date()
