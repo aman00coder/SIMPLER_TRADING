@@ -1,12 +1,10 @@
 import { spawn } from "child_process";
 
-// ✅ NAMED EXPORT (IMPORTANT)
+// ✅ NAMED EXPORT
 export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
-
   const args = [
     "-y",
 
-    // timing / RTP safety
     "-use_wallclock_as_timestamps", "1",
     "-fflags", "+genpts",
     "-flags", "low_delay",
@@ -14,12 +12,10 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     "-analyzeduration", "15000000",
     "-probesize", "15000000",
 
-    // 🔥 whitelist BEFORE every input
     "-protocol_whitelist", "file,udp,rtp,pipe",
     "-i", videoSdp
   ];
 
-  // 🎙 audio inputs
   audioSdps.forEach(sdp => {
     args.push(
       "-protocol_whitelist", "file,udp,rtp,pipe",
@@ -27,7 +23,6 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     );
   });
 
-  // 🔊 audio mixing
   if (audioSdps.length > 0) {
     args.push(
       "-filter_complex",
@@ -40,7 +35,6 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   }
 
   args.push(
-    // 🎥 force size (VP8 fix)
     "-vf", "scale=1280:720",
     "-pix_fmt", "yuv420p",
     "-r", "30",
@@ -57,13 +51,8 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
 
   const ffmpeg = spawn("ffmpeg", args);
 
-  ffmpeg.stderr.on("data", data => {
-    console.error("🔥 FFmpeg:", data.toString());
-  });
-
-  ffmpeg.on("exit", code => {
-    console.log("🎬 FFmpeg exited with code:", code);
-  });
+  ffmpeg.stderr.on("data", d => console.error("🔥 FFmpeg:", d.toString()));
+  ffmpeg.on("exit", c => console.log("🎬 FFmpeg exited with code:", c));
 
   return ffmpeg;
 };

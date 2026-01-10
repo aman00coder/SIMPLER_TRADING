@@ -5,32 +5,29 @@ import { generateSDP, saveSDPFile } from "./sdpGenerator.js";
 import { startFFmpeg } from "./ffmpegRunner.js";
 
 export const startLiveRecording = async ({ state, router, sessionId }) => {
-
   const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
-  if (!fs.existsSync(TMP_DIR)) {
-    fs.mkdirSync(TMP_DIR, { recursive: true });
-  }
+  if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
 
-  // 🔥 SEPARATE TRANSPORT FOR VIDEO
+  // 🎥 VIDEO TRANSPORT (IMPORTANT FIX)
   const videoTransport = await router.createPlainTransport({
     listenIp: { ip: "127.0.0.1" },
-    rtcpMux: true,
+    rtcpMux: false, // ❗ FIX
     comedia: true
   });
 
-  const videoProducer = [...state.producers.values()]
-    .find(p => p.kind === "video");
-
-  if (!videoProducer) {
-    throw new Error("No video producer found");
-  }
+  const videoProducer = [...state.producers.values()].find(p => p.kind === "video");
+  if (!videoProducer) throw new Error("No video producer found");
 
   const videoConsumer = await videoTransport.consume({
     producerId: videoProducer.id,
     rtpCapabilities: router.rtpCapabilities
   });
 
-  // 🔥 SEPARATE TRANSPORTS FOR AUDIO
+  // 🔥 ABSOLUTELY REQUIRED
+  await videoConsumer.requestKeyFrame();
+  await new Promise(r => setTimeout(r, 1500));
+
+  // 🎙 AUDIO
   const audioConsumers = [];
   const audioTransports = [];
 
@@ -38,7 +35,7 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     if (producer.kind === "audio") {
       const audioTransport = await router.createPlainTransport({
         listenIp: { ip: "127.0.0.1" },
-        rtcpMux: true,
+        rtcpMux: false, // ❗ FIX
         comedia: true
       });
 
@@ -52,12 +49,11 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     }
   }
 
-  // 🔹 SDP FILES
+  // 📄 SDP FILES
   const base = path.join(TMP_DIR, `session-${sessionId}`);
   const videoSdp = `${base}-video.sdp`;
   const audioSdps = audioConsumers.map((_, i) => `${base}-audio-${i}.sdp`);
 
-  // 🎥 VIDEO SDP (UNIQUE PORT)
   saveSDPFile(videoSdp, generateSDP({
     ip: "127.0.0.1",
     port: videoTransport.tuple.localPort,
@@ -66,7 +62,6 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     kind: "video"
   }));
 
-  // 🎙 AUDIO SDPs (UNIQUE PORT EACH)
   audioConsumers.forEach((item, i) => {
     saveSDPFile(audioSdps[i], generateSDP({
       ip: "127.0.0.1",
@@ -77,7 +72,6 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     }));
   });
 
-  // 🎬 OUTPUT
   const outputFile = `${base}.mp4`;
 
   const ffmpegProcess = startFFmpeg({
@@ -86,7 +80,6 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     output: outputFile
   });
 
-  // 🔹 SAVE STATE
   state.recording = {
     videoTransport,
     audioTransports,
