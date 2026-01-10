@@ -4,12 +4,12 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   const args = [
     "-y",
 
-    // ✅ VERY IMPORTANT for RTP/SDP
+    // 🔥 MUST for VP8 + SDP
     "-fflags", "+genpts",
-    "-analyzeduration", "10000000",   // 🔥 fix for size detection
-    "-probesize", "10000000",
-
     "-protocol_whitelist", "file,udp,rtp,pipe",
+
+    // 🔥 FORCE video size (VERY IMPORTANT)
+    "-video_size", "1280x720",
 
     // 🎥 video input
     "-i", videoSdp
@@ -20,7 +20,7 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     args.push("-i", sdp);
   });
 
-  // 🔊 audio mix
+  // 🔊 mix audio
   if (audioSdps.length > 0) {
     args.push(
       "-filter_complex",
@@ -33,7 +33,7 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   }
 
   args.push(
-    // ✅ force pixel format & fps (VERY IMPORTANT)
+    // 🔥 encoder settings
     "-pix_fmt", "yuv420p",
     "-r", "30",
 
