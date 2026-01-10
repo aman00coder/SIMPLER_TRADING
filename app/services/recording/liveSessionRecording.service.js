@@ -5,54 +5,54 @@ import { generateSDP, saveSDPFile } from "./sdpGenerator.js";
 import { startFFmpeg } from "./ffmpegRunner.js";
 
 /**
- * ✅ Wait for video producer
+ * ✅ Wait until a video producer exists
  */
 const waitForVideoProducer = async (state, timeout = 8000) => {
   const start = Date.now();
 
   while (Date.now() - start < timeout) {
-    const videoProducer = [...state.producers.values()]
-      .find(p => p.kind === "video");
+    const videoProducer = [...state.producers.values()].find(
+      p => p.kind === "video"
+    );
 
     if (videoProducer) return videoProducer;
-
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
 
   throw new Error("No video producer found (timeout)");
 };
 
 export const startLiveRecording = async ({ state, router, sessionId }) => {
-
+  // ================= TMP DIR =================
   const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
   if (!fs.existsSync(TMP_DIR)) {
     fs.mkdirSync(TMP_DIR, { recursive: true });
   }
 
- // ================= VIDEO =================
-const videoTransport = await router.createPlainTransport({
-  listenIp: { ip: "127.0.0.1" },
-  rtcpMux: true,
-  comedia: true
-});
+  // ================= VIDEO TRANSPORT =================
+  const videoTransport = await router.createPlainTransport({
+    listenIp: { ip: "127.0.0.1" },
+    rtcpMux: false,          // ❗ important for FFmpeg
+    comedia: false           // ❗ we will connect manually
+  });
 
-const videoProducer = await waitForVideoProducer(state);
+  // ================= VIDEO CONSUMER =================
+  const videoProducer = await waitForVideoProducer(state);
 
-const videoConsumer = await videoTransport.consume({
-  producerId: videoProducer.id,
-  rtpCapabilities: router.rtpCapabilities,
-  paused: false
-});
+  const videoConsumer = await videoTransport.consume({
+    producerId: videoProducer.id,
+    rtpCapabilities: router.rtpCapabilities,
+    paused: false
+  });
 
-await videoConsumer.resume();
+  await videoConsumer.resume();
 
-// 🔥 REQUEST KEYFRAME (CORRECT PLACE)
-if (videoConsumer.requestKeyFrame) {
-  await videoConsumer.requestKeyFrame();
-}
+  // 🔥 MUST: request keyframe from CONSUMER (not producer)
+  if (videoConsumer.requestKeyFrame) {
+    await videoConsumer.requestKeyFrame();
+  }
 
-
-  // ================= AUDIO =================
+  // ================= AUDIO TRANSPORTS =================
   const audioConsumers = [];
   const audioTransports = [];
 
@@ -60,8 +60,8 @@ if (videoConsumer.requestKeyFrame) {
     if (producer.kind === "audio") {
       const audioTransport = await router.createPlainTransport({
         listenIp: { ip: "127.0.0.1" },
-        rtcpMux: true,
-        comedia: true
+        rtcpMux: false,
+        comedia: false
       });
 
       const consumer = await audioTransport.consume({
@@ -77,28 +77,53 @@ if (videoConsumer.requestKeyFrame) {
     }
   }
 
-  // ================= SDP =================
+  // ================= SDP FILES =================
   const base = path.join(TMP_DIR, `session-${sessionId}`);
   const videoSdp = `${base}-video.sdp`;
   const audioSdps = audioConsumers.map((_, i) => `${base}-audio-${i}.sdp`);
 
-  saveSDPFile(videoSdp, generateSDP({
-    ip: "127.0.0.1",
-    port: videoTransport.tuple.localPort,
-    kind: "video",
-    rtpParameters: videoConsumer.rtpParameters
-  }));
-
-  audioConsumers.forEach((item, i) => {
-    saveSDPFile(audioSdps[i], generateSDP({
+  // 🎥 VIDEO SDP
+  saveSDPFile(
+    videoSdp,
+    generateSDP({
       ip: "127.0.0.1",
-      port: item.transport.tuple.localPort,
-      kind: "audio",
-      rtpParameters: item.consumer.rtpParameters
-    }));
+      port: videoTransport.tuple.localPort,
+      kind: "video",
+      rtpParameters: videoConsumer.rtpParameters
+    })
+  );
+
+  // 🎙 AUDIO SDPs
+  audioConsumers.forEach((item, i) => {
+    saveSDPFile(
+      audioSdps[i],
+      generateSDP({
+        ip: "127.0.0.1",
+        port: item.transport.tuple.localPort,
+        kind: "audio",
+        rtpParameters: item.consumer.rtpParameters
+      })
+    );
   });
 
-  // ================= FFMPEG =================
+  // ================= CONNECT TRANSPORTS =================
+  // 🔥 THIS IS THE REAL FIX — RTP WILL FLOW ONLY AFTER THIS
+
+  await videoTransport.connect({
+    ip: "127.0.0.1",
+    port: videoTransport.tuple.localPort,
+    rtcpPort: videoTransport.tuple.localPort + 1
+  });
+
+  for (const t of audioTransports) {
+    await t.connect({
+      ip: "127.0.0.1",
+      port: t.tuple.localPort,
+      rtcpPort: t.tuple.localPort + 1
+    });
+  }
+
+  // ================= START FFMPEG =================
   const outputFile = `${base}.mp4`;
 
   const ffmpegProcess = startFFmpeg({
@@ -107,7 +132,7 @@ if (videoConsumer.requestKeyFrame) {
     output: outputFile
   });
 
-  // ================= SAVE STATE =================
+  // ================= SAVE RECORDING STATE =================
   state.recording = {
     videoTransport,
     audioTransports,
