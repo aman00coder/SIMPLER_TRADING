@@ -60,7 +60,26 @@ const liveSessionSchema = new mongoose.Schema({
     whiteboardData: [{ type: Object }],
     whiteboardId: { type: mongoose.Schema.Types.ObjectId, ref: "Whiteboard" },
     chatMessages: [{ type: mongoose.Schema.Types.ObjectId, ref: "ChatMessage" }],
-    recordingUrl: String,
+// model/liveSessions/liveeSession.model.js में ये changes करें:
+    recordingUrl: [
+        {
+            fileUrl: String,
+            fileName: String,
+            fileType: {
+                type: String,
+                default: "video/mp4"
+            },
+            recordedAt: {
+                type: Date,
+                default: Date.now
+            },
+            duration: Number, // seconds में
+            recordedBy: {
+                type: mongoose.Schema.Types.ObjectId,
+                ref: "User"
+            }
+        }
+    ],
 
     // 🔹 Session Controls
     maxParticipants: { type: Number, default: 100 },

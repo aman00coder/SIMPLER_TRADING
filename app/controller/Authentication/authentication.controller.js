@@ -2152,16 +2152,16 @@ export const createStreamerAccount = async (req, res) => {
 export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
-
+ 
     if (!email || !password) {
       return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
     }
-
+ 
     // Find user with email (case-insensitive)
     const user = await authenticationModel.findOne({
       email: email.toLowerCase()
     });
-
+ 
     if (user) {
       // Check password match
       const isMatch = await comparePass(password, user.password);
@@ -2169,7 +2169,7 @@ export const login = async (req, res) => {
         console.log(`Login failed: Password mismatch for ${email}`);
         return sendErrorResponse(res, errorEn.INVALID_CREDENTIALS, HttpStatus.UNAUTHORIZED);
       }
-
+ 
       // ✅ DEBUG LOG - Check user data before verification
       console.log("=== LOGIN DEBUG ===");
       console.log("User email:", email);
@@ -2179,67 +2179,70 @@ export const login = async (req, res) => {
       console.log("isActive:", user.isActive);
       console.log("isEmailVerified:", user.isEmailVerified);
       console.log("===================");
-
+ 
       // ✅ Check if user account is active
       if (!user.isActive) {
         return sendErrorResponse(res, "Your account has been deactivated. Please contact support.", HttpStatus.FORBIDDEN);
       }
-
-      // ✅ Check if email is verified
-      if (!user.isEmailVerified) {
-        return sendErrorResponse(res, "Please verify your email before logging in.", HttpStatus.FORBIDDEN);
-      }
-
-      // ✅ Check if streamer is approved
+ 
+      // ✅ Check email verification based on role
       if (user.role === "STREAMER") {
-        // First check if streamerProfile exists
+        // Streamer requires email verification
+        if (!user.isEmailVerified) {
+          return sendErrorResponse(res, "Please verify your email before logging in.", HttpStatus.FORBIDDEN);
+        }
+       
+        // Check if streamerProfile exists
         if (!user.streamerProfile) {
           console.error(`Streamer ${email} has no streamerProfile`);
           return sendErrorResponse(res, "Streamer profile not configured. Please contact support.", HttpStatus.FORBIDDEN);
         }
-
+ 
         // Check if streamer can login using the method
         if (!user.canStreamerLogin()) {
           let errorMessage = "";
-          
+         
           if (user.streamerProfile.verificationStatus === "PENDING") {
             errorMessage = "Your streamer account is pending approval. Please wait for admin approval.";
           } else if (user.streamerProfile.verificationStatus === "REJECTED") {
             errorMessage = "Your streamer application was rejected. Please contact admin.";
           } else if (user.streamerProfile.verificationStatus === "SUSPENDED") {
             const suspensionReason = user.streamerProfile.suspensionReason || "No reason provided";
-            const suspensionEnds = user.streamerProfile.suspensionEndsAt 
+            const suspensionEnds = user.streamerProfile.suspensionEndsAt
               ? ` until ${new Date(user.streamerProfile.suspensionEndsAt).toLocaleDateString()}`
               : " indefinitely";
             errorMessage = `Your streamer account is suspended${suspensionEnds}. Reason: ${suspensionReason}`;
           } else {
             errorMessage = "Your streamer account is not approved to login.";
           }
-          
+         
           console.log(`Streamer login blocked for ${email}: ${errorMessage}`);
           return sendErrorResponse(res, errorMessage, HttpStatus.FORBIDDEN);
         }
-        
+       
         console.log(`Streamer ${email} approved to login. Status: ${user.streamerProfile.verificationStatus}`);
-      }
-
-      // ✅ For ADMIN and VIEWER - no extra checks needed
-      // Just ensure streamerProfile is null (should be handled by pre-save middleware)
-      if (user.role === "ADMIN" || user.role === "VIEWER") {
+      } else if (user.role === "ADMIN" || user.role === "VIEWER") {
+        // ADMIN and VIEWER don't require email verification
+        // Just ensure streamerProfile is null
         if (user.streamerProfile) {
           console.warn(`Non-streamer user ${email} has streamerProfile. Clearing it.`);
           // Force clear streamerProfile for non-streamers
           user.streamerProfile = null;
         }
+      } else {
+        // For any other role, check email verification
+        if (!user.isEmailVerified) {
+          return sendErrorResponse(res, "Please verify your email before logging in.", HttpStatus.FORBIDDEN);
+        }
       }
-
+ 
       // Update last login timestamp
       user.lastLogin = new Date();
       await user.save();
-
+ 
       // Generate JWT token
-      const token = generateToken(user); 
-
+      const token = generateToken(user);
+ 
       // Prepare response data - Common for all roles
       const userData = {
         token,
@@ -2255,7 +2258,7 @@ export const login = async (req, res) => {
         createdAt: user.createdAt,
         updatedAt: user.updatedAt
       };
-
+ 
       // ✅ Add streamer profile ONLY for STREAMER role
       if (user.role === "STREAMER" && user.streamerProfile) {
         userData.streamerProfile = {
@@ -2274,7 +2277,7 @@ export const login = async (req, res) => {
           certifications: user.streamerProfile.certifications || [],
           socialLinks: user.streamerProfile.socialLinks || {}
         };
-        
+       
         // Add suspension info if suspended
         if (user.streamerProfile.verificationStatus === "SUSPENDED") {
           userData.streamerProfile.suspensionReason = user.streamerProfile.suspensionReason;
@@ -2282,13 +2285,13 @@ export const login = async (req, res) => {
           userData.streamerProfile.suspensionEndsAt = user.streamerProfile.suspensionEndsAt;
         }
       }
-
+ 
       // Log successful login
       console.log(`Successful login for ${email} with role ${user.role}`);
-      
+     
       return sendSuccessResponse(res, userData, successEn.LOGIN_SUCCESS, HttpStatus.OK);
     }
-
+ 
     // User not found
     console.log(`Login failed: User not found for ${email}`);
     return sendErrorResponse(res, errorEn.EMAIL_NOT_FOUND, HttpStatus.NOT_FOUND);
