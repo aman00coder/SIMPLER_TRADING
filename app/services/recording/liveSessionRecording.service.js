@@ -4,6 +4,25 @@ import os from "os";
 import { generateSDP, saveSDPFile } from "./sdpGenerator.js";
 import { startFFmpeg } from "./ffmpegRunner.js";
 
+/**
+ * ✅ WAIT until video producer is available
+ */
+const waitForVideoProducer = async (state, timeout = 7000) => {
+  const start = Date.now();
+
+  while (Date.now() - start < timeout) {
+    const videoProducer = [...state.producers.values()]
+      .find(p => p.kind === "video");
+
+    if (videoProducer) return videoProducer;
+
+    // ⏳ wait 100ms and retry
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+
+  throw new Error("No video producer found (timeout)");
+};
+
 export const startLiveRecording = async ({ state, router, sessionId }) => {
 
   const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
@@ -18,12 +37,8 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     comedia: true
   });
 
-  const videoProducer = [...state.producers.values()]
-    .find(p => p.kind === "video");
-
-  if (!videoProducer) {
-    throw new Error("No video producer found");
-  }
+  // ✅ WAIT FOR VIDEO PRODUCER (FIX)
+  const videoProducer = await waitForVideoProducer(state);
 
   const videoConsumer = await videoTransport.consume({
     producerId: videoProducer.id,
@@ -57,7 +72,7 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
   const videoSdp = `${base}-video.sdp`;
   const audioSdps = audioConsumers.map((_, i) => `${base}-audio-${i}.sdp`);
 
-  // 🎥 VIDEO SDP (🔥 REAL FIX)
+  // 🎥 VIDEO SDP
   saveSDPFile(
     videoSdp,
     generateSDP({
