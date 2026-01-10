@@ -898,7 +898,7 @@ export const startLiveSessionRecording = async (req, res) => {
 };
 
 export const stopLiveSessionRecording = async (req, res) => {
-  let sessionId; // ✅ scope fix
+  let sessionId;
 
   try {
     sessionId = req.params.sessionId;
@@ -913,12 +913,11 @@ export const stopLiveSessionRecording = async (req, res) => {
       return sendErrorResponse(res, "Recording not running", HttpStatus.BAD_REQUEST);
     }
 
-    // 🔐 only streamer can stop recording
     if (state.createdBy?.toString() !== userId) {
       return sendErrorResponse(res, "Unauthorized", HttpStatus.UNAUTHORIZED);
     }
 
-    // ⏱ recording duration
+    // ⏱ duration
     const recordingStartTime = state.recording.startTime || new Date();
     const recordingDuration = Math.floor(
       (Date.now() - recordingStartTime.getTime()) / 1000
@@ -927,20 +926,17 @@ export const stopLiveSessionRecording = async (req, res) => {
     // 🛑 stop ffmpeg
     state.recording.ffmpegProcess.kill("SIGINT");
 
-    // ✅ wait until ffmpeg fully exits
-    await new Promise((resolve, reject) => {
-      state.recording.ffmpegProcess.once("exit", resolve);
-      state.recording.ffmpegProcess.once("error", reject);
-    });
+    // 🔥 IMPORTANT: give FFmpeg time to flush frames
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
-    // ✅ verify file exists
+    // ✅ verify file
     if (!fs.existsSync(state.recording.filePath)) {
       throw new Error("Recording file not found");
     }
 
     const stats = fs.statSync(state.recording.filePath);
-    if (stats.size === 0) {
-      throw new Error("Recording file is empty");
+    if (stats.size < 1024) {
+      throw new Error("Recording file too small (no frames received)");
     }
 
     // ☁️ upload to S3
@@ -949,7 +945,6 @@ export const stopLiveSessionRecording = async (req, res) => {
       sessionId
     );
 
-    // ✅ DB recording object
     const uploadedRecording = {
       fileUrl: uploadResult.fileUrl,
       fileName: `${sessionId}_${Date.now()}.mp4`,
@@ -959,7 +954,6 @@ export const stopLiveSessionRecording = async (req, res) => {
       recordedBy: userId
     };
 
-    // 💾 save in DB
     await liveSessionModel.findOneAndUpdate(
       { sessionId },
       { $push: { recordingUrl: uploadedRecording } }
@@ -980,7 +974,6 @@ export const stopLiveSessionRecording = async (req, res) => {
   } catch (error) {
     console.error("🔥 stopLiveSessionRecording error:", error.message);
 
-    // 🧹 safe rollback
     if (sessionId) {
       const state = roomState.get(sessionId);
       if (state?.recording) {
@@ -992,11 +985,12 @@ export const stopLiveSessionRecording = async (req, res) => {
 
     return sendErrorResponse(
       res,
-      "Failed to stop recording",
+      error.message || "Failed to stop recording",
       HttpStatus.INTERNAL_SERVER_ERROR
     );
   }
 };
+
 
 /**
  * ✅ Get All Live Sessions of Current User Only
