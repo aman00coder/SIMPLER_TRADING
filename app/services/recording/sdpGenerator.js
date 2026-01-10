@@ -1,7 +1,7 @@
 import fs from "fs";
 
 /**
- * ✅ Generate SDP dynamically from mediasoup RTP parameters
+ * ✅ Generate FFmpeg compatible SDP from mediasoup RTP params
  */
 export const generateSDP = ({ ip, port, kind, rtpParameters }) => {
   const codec = rtpParameters.codecs[0];
@@ -10,7 +10,7 @@ export const generateSDP = ({ ip, port, kind, rtpParameters }) => {
   const codecName = codec.mimeType.split("/")[1];
   const ssrc = rtpParameters.encodings[0].ssrc;
 
-  return `v=0
+  let sdp = `v=0
 o=- 0 0 IN IP4 ${ip}
 s=Mediasoup Record
 c=IN IP4 ${ip}
@@ -20,11 +20,18 @@ a=rtpmap:${payloadType} ${codecName}/${clockRate}
 a=ssrc:${ssrc} cname:mediasoup
 a=recvonly
 `;
+
+  // 🔥 CRITICAL FOR VP8 (SIZE FIX)
+  if (codecName.toLowerCase() === "vp8") {
+    sdp += `
+a=fmtp:${payloadType} max-fs=12288;max-fr=60
+a=framesize:${payloadType} 1280-720
+`;
+  }
+
+  return sdp;
 };
 
-/**
- * ✅ Save SDP file
- */
 export const saveSDPFile = (filePath, sdp) => {
   fs.writeFileSync(filePath, sdp);
 };

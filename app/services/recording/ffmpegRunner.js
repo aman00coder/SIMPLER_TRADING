@@ -4,22 +4,18 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
 
   const args = [
     "-y",
-
-    // 🔥 RTP / timing stability
-    "-use_wallclock_as_timestamps", "1",
-    "-fflags", "+genpts",
+    "-fflags", "+genpts+nobuffer",
     "-flags", "low_delay",
+    "-strict", "experimental",
+    "-analyzeduration", "30000000",
+    "-probesize", "30000000",
+    "-max_delay", "500000",
+    "-reorder_queue_size", "1024",
 
-    // 🔥 IMPORTANT for SDP streams
-    "-analyzeduration", "20000000",
-    "-probesize", "20000000",
-
-    // 🔥 allow RTP
     "-protocol_whitelist", "file,udp,rtp,pipe",
     "-i", videoSdp
   ];
 
-  // 🎙 audio inputs
   audioSdps.forEach(sdp => {
     args.push(
       "-protocol_whitelist", "file,udp,rtp,pipe",
@@ -27,11 +23,10 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     );
   });
 
-  // 🔊 audio mix
   if (audioSdps.length > 0) {
     args.push(
       "-filter_complex",
-      `${audioSdps.map((_, i) => `[${i + 1}:a]`).join("")}amix=inputs=${audioSdps.length}:dropout_transition=0[a]`,
+      `${audioSdps.map((_, i) => `[${i + 1}:a]`).join("")}amix=inputs=${audioSdps.length}[a]`,
       "-map", "0:v",
       "-map", "[a]"
     );
@@ -40,20 +35,13 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   }
 
   args.push(
-    // 🔥 FORCE valid frames (THIS FIXES 0 BYTE FILE)
-    "-vsync", "1",
-    "-vf", "scale=1280:720,fps=30",
-    "-pix_fmt", "yuv420p",
-
     "-c:v", "libx264",
     "-preset", "veryfast",
-    "-tune", "zerolatency",
-    "-profile:v", "baseline",
-    "-x264opts", "keyint=60:min-keyint=60:no-scenecut",
-
+    "-pix_fmt", "yuv420p",
+    "-r", "30",
+    "-g", "60",
     "-c:a", "aac",
     "-movflags", "+faststart",
-
     output
   );
 
