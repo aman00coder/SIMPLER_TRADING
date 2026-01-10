@@ -905,41 +905,50 @@ export const stopLiveSessionRecording = async (req, res) => {
     const userId = req.tokenData?.userId;
 
     if (!sessionId) {
-      return sendErrorResponse(res, "SessionId required", HttpStatus.BAD_REQUEST);
+      return sendErrorResponse(res, "SessionId required", 400);
     }
 
     const state = roomState.get(sessionId);
     if (!state?.recording?.ffmpegProcess) {
-      return sendErrorResponse(res, "Recording not running", HttpStatus.BAD_REQUEST);
+      return sendErrorResponse(res, "Recording not running", 400);
     }
 
     if (state.createdBy?.toString() !== userId) {
-      return sendErrorResponse(res, "Unauthorized", HttpStatus.UNAUTHORIZED);
+      return sendErrorResponse(res, "Unauthorized", 401);
     }
 
-    // ⏱ duration
-    const recordingStartTime = state.recording.startTime || new Date();
-    const recordingDuration = Math.floor(
-      (Date.now() - recordingStartTime.getTime()) / 1000
-    );
+    const startTime = state.recording.startTime || new Date();
+    const durationSec = Math.floor((Date.now() - startTime.getTime()) / 1000);
 
-    // 🛑 stop ffmpeg
+    // ❗ minimum recording duration
+    if (durationSec < 3) {
+      return sendErrorResponse(
+        res,
+        "Recording too short, wait at least 3 seconds",
+        400
+      );
+    }
+
+    // 🛑 Stop FFmpeg
     state.recording.ffmpegProcess.kill("SIGINT");
 
-    // 🔥 IMPORTANT: give FFmpeg time to flush frames
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // ⏳ WAIT FOR FLUSH
+    await new Promise(resolve => {
+      setTimeout(resolve, 2000);
+    });
 
-    // ✅ verify file
     if (!fs.existsSync(state.recording.filePath)) {
-      throw new Error("Recording file not found");
+      throw new Error("Recording file not created");
     }
 
     const stats = fs.statSync(state.recording.filePath);
-    if (stats.size < 1024) {
+
+    // ❗ soft validation
+    if (stats.size < 100 * 1024) {
       throw new Error("Recording file too small (no frames received)");
     }
 
-    // ☁️ upload to S3
+    // ☁️ upload
     const uploadResult = await uploadSessionRecording(
       state.recording.filePath,
       sessionId
@@ -950,7 +959,7 @@ export const stopLiveSessionRecording = async (req, res) => {
       fileName: `${sessionId}_${Date.now()}.mp4`,
       fileType: "video/mp4",
       recordedAt: new Date(),
-      duration: recordingDuration,
+      duration: durationSec,
       recordedBy: userId
     };
 
@@ -959,7 +968,7 @@ export const stopLiveSessionRecording = async (req, res) => {
       { $push: { recordingUrl: uploadedRecording } }
     );
 
-    // 🧹 cleanup
+    // cleanup
     state.recording.ffmpegProcess = null;
     state.recording.videoConsumer = null;
     state.recording.audioConsumers = [];
@@ -968,28 +977,20 @@ export const stopLiveSessionRecording = async (req, res) => {
       res,
       uploadedRecording,
       "Recording stopped & uploaded successfully",
-      HttpStatus.OK
+      200
     );
 
   } catch (error) {
     console.error("🔥 stopLiveSessionRecording error:", error.message);
 
-    if (sessionId) {
-      const state = roomState.get(sessionId);
-      if (state?.recording) {
-        state.recording.ffmpegProcess = null;
-        state.recording.videoConsumer = null;
-        state.recording.audioConsumers = [];
-      }
-    }
-
     return sendErrorResponse(
       res,
       error.message || "Failed to stop recording",
-      HttpStatus.INTERNAL_SERVER_ERROR
+      500
     );
   }
 };
+
 
 
 /**
