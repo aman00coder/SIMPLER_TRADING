@@ -1,14 +1,12 @@
 import { spawn } from "child_process";
 
-// ✅ NAMED EXPORT
 export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
+
   const args = [
     "-y",
-
     "-use_wallclock_as_timestamps", "1",
     "-fflags", "+genpts",
     "-flags", "low_delay",
-
     "-analyzeduration", "15000000",
     "-probesize", "15000000",
 
@@ -26,7 +24,7 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   if (audioSdps.length > 0) {
     args.push(
       "-filter_complex",
-      `${audioSdps.map((_, i) => `[${i + 1}:a]`).join("")}amix=inputs=${audioSdps.length}:dropout_transition=0[a]`,
+      `${audioSdps.map((_, i) => `[${i + 1}:a]`).join("")}amix=inputs=${audioSdps.length}[a]`,
       "-map", "0:v",
       "-map", "[a]"
     );
@@ -35,24 +33,24 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   }
 
   args.push(
-    "-vf", "scale=1280:720",
-    "-pix_fmt", "yuv420p",
-    "-r", "30",
-
     "-c:v", "libx264",
     "-preset", "veryfast",
-    "-profile:v", "baseline",
-
+    "-pix_fmt", "yuv420p",
+    "-r", "30",
     "-c:a", "aac",
     "-movflags", "+faststart",
-
     output
   );
 
   const ffmpeg = spawn("ffmpeg", args);
 
-  ffmpeg.stderr.on("data", d => console.error("🔥 FFmpeg:", d.toString()));
-  ffmpeg.on("exit", c => console.log("🎬 FFmpeg exited with code:", c));
+  ffmpeg.stderr.on("data", d => {
+    console.log("🔥 FFmpeg:", d.toString());
+  });
+
+  ffmpeg.on("exit", code => {
+    console.log("🎬 FFmpeg exited with code:", code);
+  });
 
   return ffmpeg;
 };
