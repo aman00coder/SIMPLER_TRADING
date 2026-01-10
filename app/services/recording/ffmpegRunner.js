@@ -11,7 +11,6 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     args.push("-i", sdp);
   });
 
-  // 🔊 mix audio if present
   if (audioSdps.length > 0) {
     args.push(
       "-filter_complex",
