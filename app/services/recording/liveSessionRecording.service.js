@@ -29,28 +29,28 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     fs.mkdirSync(TMP_DIR, { recursive: true });
   }
 
-  // ================= VIDEO =================
-  const videoTransport = await router.createPlainTransport({
-    listenIp: { ip: "127.0.0.1" },
-    rtcpMux: true,
-    comedia: true
-  });
+ // ================= VIDEO =================
+const videoTransport = await router.createPlainTransport({
+  listenIp: { ip: "127.0.0.1" },
+  rtcpMux: true,
+  comedia: true
+});
 
-  const videoProducer = await waitForVideoProducer(state);
+const videoProducer = await waitForVideoProducer(state);
 
-  const videoConsumer = await videoTransport.consume({
-    producerId: videoProducer.id,
-    rtpCapabilities: router.rtpCapabilities,
-    paused: false
-  });
+const videoConsumer = await videoTransport.consume({
+  producerId: videoProducer.id,
+  rtpCapabilities: router.rtpCapabilities,
+  paused: false
+});
 
-  // ✅ resume consumer
-  await videoConsumer.resume();
+await videoConsumer.resume();
 
-  // ✅ CORRECT KEYFRAME REQUEST (FIX)
-  if (videoConsumer.requestKeyFrame) {
-    await videoConsumer.requestKeyFrame();
-  }
+// 🔥 REQUEST KEYFRAME (CORRECT PLACE)
+if (videoConsumer.requestKeyFrame) {
+  await videoConsumer.requestKeyFrame();
+}
+
 
   // ================= AUDIO =================
   const audioConsumers = [];
