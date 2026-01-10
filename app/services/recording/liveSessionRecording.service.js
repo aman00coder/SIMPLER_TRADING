@@ -5,30 +5,22 @@ import { generateSDP, saveSDPFile } from "./sdpGenerator.js";
 import { startFFmpeg } from "./ffmpegRunner.js";
 
 /**
- * ✅ WAIT until video producer is available
+ * ✅ Wait for video producer
  */
-const waitForVideoProducer = async (state, timeout = 7000) => {
+const waitForVideoProducer = async (state, timeout = 8000) => {
   const start = Date.now();
-
   while (Date.now() - start < timeout) {
-    const videoProducer = [...state.producers.values()]
-      .find(p => p.kind === "video");
-
+    const videoProducer = [...state.producers.values()].find(p => p.kind === "video");
     if (videoProducer) return videoProducer;
-
-    // ⏳ wait 100ms and retry
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(r => setTimeout(r, 100));
   }
-
   throw new Error("No video producer found (timeout)");
 };
 
 export const startLiveRecording = async ({ state, router, sessionId }) => {
 
   const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
-  if (!fs.existsSync(TMP_DIR)) {
-    fs.mkdirSync(TMP_DIR, { recursive: true });
-  }
+  if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
 
   // ================= VIDEO =================
   const videoTransport = await router.createPlainTransport({
@@ -37,13 +29,17 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     comedia: true
   });
 
-  // ✅ WAIT FOR VIDEO PRODUCER (FIX)
   const videoProducer = await waitForVideoProducer(state);
 
   const videoConsumer = await videoTransport.consume({
     producerId: videoProducer.id,
-    rtpCapabilities: router.rtpCapabilities
+    rtpCapabilities: router.rtpCapabilities,
+    paused: false
   });
+
+  // ✅ IMPORTANT
+  await videoConsumer.resume();
+  await videoProducer.requestKeyFrame();
 
   // ================= AUDIO =================
   const audioConsumers = [];
@@ -59,44 +55,39 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
 
       const consumer = await audioTransport.consume({
         producerId: producer.id,
-        rtpCapabilities: router.rtpCapabilities
+        rtpCapabilities: router.rtpCapabilities,
+        paused: false
       });
+
+      await consumer.resume();
 
       audioTransports.push(audioTransport);
       audioConsumers.push({ consumer, transport: audioTransport });
     }
   }
 
-  // ================= SDP FILES =================
+  // ================= SDP =================
   const base = path.join(TMP_DIR, `session-${sessionId}`);
   const videoSdp = `${base}-video.sdp`;
   const audioSdps = audioConsumers.map((_, i) => `${base}-audio-${i}.sdp`);
 
-  // 🎥 VIDEO SDP
-  saveSDPFile(
-    videoSdp,
-    generateSDP({
-      ip: "127.0.0.1",
-      port: videoTransport.tuple.localPort,
-      kind: "video",
-      rtpParameters: videoConsumer.rtpParameters
-    })
-  );
+  saveSDPFile(videoSdp, generateSDP({
+    ip: "127.0.0.1",
+    port: videoTransport.tuple.localPort,
+    kind: "video",
+    rtpParameters: videoConsumer.rtpParameters
+  }));
 
-  // 🎙 AUDIO SDPs
   audioConsumers.forEach((item, i) => {
-    saveSDPFile(
-      audioSdps[i],
-      generateSDP({
-        ip: "127.0.0.1",
-        port: item.transport.tuple.localPort,
-        kind: "audio",
-        rtpParameters: item.consumer.rtpParameters
-      })
-    );
+    saveSDPFile(audioSdps[i], generateSDP({
+      ip: "127.0.0.1",
+      port: item.transport.tuple.localPort,
+      kind: "audio",
+      rtpParameters: item.consumer.rtpParameters
+    }));
   });
 
-  // ================= START FFMPEG =================
+  // ================= FFMPEG =================
   const outputFile = `${base}.mp4`;
 
   const ffmpegProcess = startFFmpeg({
@@ -105,7 +96,6 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     output: outputFile
   });
 
-  // ================= SAVE STATE =================
   state.recording = {
     videoTransport,
     audioTransports,
