@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 import HttpStatus from "http-status-codes";
 import { v4 as uuidv4 } from "uuid";
 import whiteBoardModel from "../../model/whiteBoards/whiteBoard.model.js"
-import * as commonServices from "../../services/common.js";
+import * as commonServices from "../../services/common/common.js";
 import { sendSuccessResponse, sendErrorResponse } from "../../responses/responses.js";
 import { errorEn, successEn } from "../../responses/message.js";
 import { genPassword } from "../../utils/password.js";

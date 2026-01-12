@@ -141,161 +141,191 @@
 
 
 
-
-
 import { Router } from "express";
 const router = Router();
-import { verifyToken, checkRole } from '../../middleware/authentication.js';
-import { uploadFile } from '../../middleware/aws.s3.js';
-import * as courseController from '../../controller/course/course.controller.js';
 
+import { verifyToken, checkRole } from "../../middleware/authentication.js";
+import * as courseController from "../../controller/course/course.controller.js";
+
+// Role Middlewares
 const ADMINAuth = [verifyToken, checkRole([1])];
 const STREAMERAuth = [verifyToken, checkRole([2])];
 const VIEWERAuth = [verifyToken, checkRole([3])];
 const ADMINSTREAMERAuth = [verifyToken, checkRole([1, 2])];
 const ADMINSTREAMERVIEWERAuth = [verifyToken, checkRole([1, 2, 3])];
 
-// Course CRUD Operations
-router.route("/createCourse").post(
-    ADMINSTREAMERAuth,
-    uploadFile([
-        { name: "lectures", maxCount: 10 },
-        { name: "thumbnail", maxCount: 1 },
-        { name: "assignments", maxCount: 25 }
-    ]),
-    courseController.createCourse
+
+// =================================================
+// COURSE CRUD (NO FILE UPLOAD HERE ❌)
+// =================================================
+
+// ✅ Create Course (URLs come from frontend)
+router.post(
+  "/createCourse",
+  STREAMERAuth,
+  courseController.createCourse
 );
 
-// ✅ Get all courses with pagination and ownership check
-router.route("/getAllCourses").get(
-    ADMINSTREAMERVIEWERAuth,
-    courseController.getAllCourse
+// ✅ Get all courses (role based)
+router.get(
+  "/getAllCourses",
+  ADMINSTREAMERVIEWERAuth,
+  courseController.getAllCourse
 );
 
-router.route("/getAllCoursesForUser").get(
-    courseController.getAllCoursesForUser
+router.get(
+  "/getAllCoursesForUser",
+  courseController.getAllCoursesForUser
 );
 
-// ✅ Get single course (only owner or admin can view details)
-router.route("/getSingleCourse/:id").get(
-    ADMINSTREAMERVIEWERAuth,
-    courseController.getSingleCourse
+// ✅ Get single course (owner/admin)
+router.get(
+  "/getSingleCourse/:id",
+  ADMINSTREAMERAuth,
+  courseController.getSingleCourse
 );
 
-router.route("/getSingleCourseForEnrolledUsers/:id").get(
-    VIEWERAuth,
-    courseController.getSingleCourseForEnrolledUsers
+router.get(
+  "/getSingleCourseForEnrolledUsers/:id",
+  VIEWERAuth,
+  courseController.getSingleCourseForEnrolledUsers
 );
 
-// ✅ Update course (only owner or admin can update)
-router.route("/updateCourse/:id").put(
-    ADMINSTREAMERAuth,
-    uploadFile([
-        { name: "lectures", maxCount: 10 },
-        { name: "thumbnail", maxCount: 1 },
-        { name: "assignments", maxCount: 25 }
-    ]),
-    courseController.updateCourse
+// ✅ Update Course (URLs only)
+router.put(
+  "/updateCourse/:id",
+  STREAMERAuth,
+  courseController.updateCourse
 );
 
-// ✅ Delete course (only owner or admin can delete)
-router.route("/deleteCourse/:id").delete(
-    ADMINSTREAMERAuth,
-    courseController.deleteCourse
+// ✅ Delete Course
+router.delete(
+  "/deleteCourse/:id",
+  ADMINSTREAMERAuth,
+  courseController.deleteCourse
 );
 
-// ✅ Toggle course active status (admin only)
-router.route("/toggle-course-status/:id").patch(
-    ADMINAuth,
-    courseController.toggleCourseStatus
+// ✅ Toggle course status (Admin only logic inside controller)
+router.patch(
+  "/toggle-course-status/:id",
+  STREAMERAuth,
+  courseController.toggleCourseStatus
 );
 
-// ✅ Get courses by specific streamer
-router.route("/streamer/:streamerId/courses").get(
-    ADMINSTREAMERVIEWERAuth,
-    courseController.getCoursesByStreamer
+// =================================================
+// COURSE LISTING / STATS
+// =================================================
+
+router.get(
+  "/streamer/:streamerId/courses",
+  ADMINSTREAMERVIEWERAuth,
+  courseController.getCoursesByStreamer
 );
 
-// ✅ Get course statistics
-router.route("/statistics").get(
-    ADMINSTREAMERAuth,
-    courseController.getCourseStatistics
+router.get(
+  "/statistics",
+  ADMINSTREAMERAuth,
+  courseController.getCourseStatistics
 );
 
-// Content Management Routes
-router.route("/:courseId/addLecture").post(
-    ADMINSTREAMERAuth,
-    uploadFile([{ name: "file", maxCount: 1 }]),
-    courseController.addLecture
+router.get(
+  "/allCoursesForAdmin",
+  ADMINAuth,
+  courseController.getAllCoursesForAdmin
 );
 
-router.route("/:courseId/removeLecture/:lectureId").delete(
-    ADMINSTREAMERAuth,
-    courseController.removeLecture
+// =================================================
+// CONTENT MANAGEMENT (URL BASED ❌ NO FILE UPLOAD)
+// =================================================
+
+// ✅ Add Lecture (URL comes in body)
+router.post(
+  "/:courseId/addLecture",
+  ADMINSTREAMERAuth,
+  courseController.addLecture
 );
 
-router.route("/:courseId/addAssignment").post(
-    ADMINSTREAMERAuth,
-    uploadFile([{ name: "resources", maxCount: 25 }]),
-    courseController.addAssignment
+// ✅ Remove Lecture
+router.delete(
+  "/:courseId/removeLecture/:lectureId",
+  ADMINSTREAMERAuth,
+  courseController.removeLecture
 );
 
-router.route("/:courseId/removeAssignment/:assignmentId").delete(
-    ADMINSTREAMERAuth,
-    courseController.removeAssignment
+// ✅ Add Assignment (resources = [url])
+router.post(
+  "/:courseId/addAssignment",
+  ADMINSTREAMERAuth,
+  courseController.addAssignment
 );
 
-
-router.route("/allCoursesForAdmin").get(
-    ADMINAuth,
-    courseController.getAllCoursesForAdmin
-);
-// Enrollment Routes
-router.route("/:courseId/enroll").post(
-    VIEWERAuth,
-    courseController.enrollInCourse
+// ✅ Remove Assignment
+router.delete(
+  "/:courseId/removeAssignment/:assignmentId",
+  ADMINSTREAMERAuth,
+  courseController.removeAssignment
 );
 
-router.route("/:courseId/unenroll").post(
-    VIEWERAuth,
-    courseController.unenrollFromCourse
+// =================================================
+// ENROLLMENT ROUTES
+// =================================================
+
+router.post(
+  "/:courseId/enroll",
+  VIEWERAuth,
+  courseController.enrollInCourse
 );
 
-router.route("/my-courses").get(
-    VIEWERAuth,
-    courseController.getMyEnrolledCourses
+router.post(
+  "/:courseId/unenroll",
+  VIEWERAuth,
+  courseController.unenrollFromCourse
 );
 
-router.route("/:courseId/enrolled-users").get(
-    ADMINSTREAMERAuth,
-    courseController.getEnrolledUsers
+router.get(
+  "/my-courses",
+  VIEWERAuth,
+  courseController.getMyEnrolledCourses
 );
 
-router.route("/:courseId/progress").put(
-    VIEWERAuth,
-    courseController.updateCourseProgress
+router.get(
+  "/:courseId/enrolled-users",
+  ADMINSTREAMERAuth,
+  courseController.getEnrolledUsers
 );
 
-// Check enrollment status
-router.route("/check-enrollment/:courseId").get(
+router.put(
+  "/:courseId/progress",
+  VIEWERAuth,
+  courseController.updateCourseProgress
+);
+
+router.get(
+  "/check-enrollment/:courseId",
   VIEWERAuth,
   courseController.checkEnrollment
 );
 
-// Admin/Streamer enrollment management
-router.route("/all-enrollments").get(
-    ADMINSTREAMERAuth,
-    courseController.getAllEnrollments
+// =================================================
+// ADMIN / STREAMER ENROLLMENT MANAGEMENT
+// =================================================
+
+router.get(
+  "/all-enrollments",
+  ADMINSTREAMERAuth,
+  courseController.getAllEnrollments
 );
 
-router.route("/:courseId/enroll-user").post(
-    ADMINSTREAMERAuth,
-    courseController.enrollUser
+router.post(
+  "/:courseId/enroll-user",
+  ADMINSTREAMERAuth,
+  courseController.enrollUser
 );
 
-router.route("/:courseId/unenroll-user/:userId").delete(
-    ADMINSTREAMERAuth,
-    courseController.unenrollUser
+router.delete(
+  "/:courseId/unenroll-user/:userId",
+  ADMINSTREAMERAuth,
+  courseController.unenrollUser
 );
 
 export default router;

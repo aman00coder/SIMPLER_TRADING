@@ -40,7 +40,7 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-pix_fmt", "yuv420p",
-    "-profile:v", "baseline",
+    "-profile:v", "main",
     "-r", "30",
 
     "-c:a", "aac",
@@ -50,15 +50,35 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     output
   );
 
-  const ffmpeg = spawn("ffmpeg", args);
+  const ffmpeg = spawn("ffmpeg", args, {
+    stdio: ["ignore", "ignore", "pipe"]
+  });
 
   ffmpeg.stderr.on("data", d => {
     console.log("🔥 FFmpeg:", d.toString());
   });
 
-  ffmpeg.on("exit", code => {
-    console.log("🎬 FFmpeg exited with code:", code);
-  });
-
   return ffmpeg;
+};
+
+// 🔥 MUST EXPORT THIS
+export const waitForFFmpegExit = (ffmpegProcess) => {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+
+    ffmpegProcess.once("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
+
+      if (code === 0 || signal === "SIGINT") {
+        resolve();
+      } else {
+        reject(
+          new Error(`FFmpeg exited abnormally: code=${code}, signal=${signal}`)
+        );
+      }
+    });
+
+    ffmpegProcess.once("error", reject);
+  });
 };

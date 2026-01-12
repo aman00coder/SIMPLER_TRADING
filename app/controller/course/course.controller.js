@@ -10,126 +10,56 @@ import mongoose from "mongoose";
 import { deleteFileFromS3 } from '../../middleware/aws.s3.js';
 
 export const createCourse = async (req, res) => {
-    try {
-        const { 
-            title, 
-            description, 
-            category, 
-            level, 
-            price, 
-            language, 
-            duration,
-            isActive,
-            tags,
-            liveClasses,
-            quizzes,
-            assignments
-        } = req.body;
+  try {
+    const {
+      title,
+      description,
+      category,
+      level,
+      price,
+      language,
+      duration,
+      isActive,
+      tags = [],
+      lectures = [],
+      assignments = [],
+      thumbnail // 🔥 DIRECT URL
+    } = req.body;
 
-        console.log("📋 [CREATE COURSE] Raw req.body:", req.body);
-        console.log("📁 [CREATE COURSE] req.fileUrls:", req.fileUrls);
-
-        // Check required fields
-        if (!title || !description || !category || !level || !price) {
-            return res.status(400).json({
-                message: "❌ Please provide title, description, category, level, and price"
-            });
-        }
-
-        // Parse JSON strings
-        const parsedTags = tags ? JSON.parse(tags) : [];
-        const parsedLiveClasses = liveClasses ? JSON.parse(liveClasses) : [];
-        const parsedQuizzes = quizzes ? JSON.parse(quizzes) : [];
-        const parsedAssignments = assignments ? JSON.parse(assignments) : [];
-
-        // Get uploaded files
-        const uploadedThumbnail = req.fileUrls?.thumbnail || [];
-        const uploadedLectures = req.fileUrls?.lectures || [];
-        const uploadedAssignments = req.fileUrls?.assignments || [];
-
-        // Use ONLY uploaded files
-        const finalLectures = [...uploadedLectures];
-        const finalAssignments = [...uploadedAssignments, ...parsedAssignments];
-
-        // Get thumbnail (should be single file)
-        const thumbnailFile = uploadedThumbnail.length > 0 ? uploadedThumbnail[0] : null;
-
-        if (!thumbnailFile) {
-            return res.status(400).json({
-                message: "❌ Course thumbnail is required"
-            });
-        }
-
-        // ✅ FIXED: thumbnail को सिर्फ string (URL) format में भेजें
-        const courseData = {
-            title,
-            description,
-            category,
-            level,
-            price: Number(price),
-            language,
-            duration: Number(duration),
-            isActive: isActive === 'true',
-            tags: parsedTags,
-            thumbnail: thumbnailFile.fileUrl, // ✅ सिर्फ URL string
-            liveClasses: parsedLiveClasses,
-            quizzes: parsedQuizzes,
-            lectures: uploadedLectures.map(lecture => ({
-                title: lecture.fileName.replace(/\.[^/.]+$/, ""), // Remove file extension
-                type: this.getFileType(lecture.fileType), // Helper function
-                url: lecture.fileUrl,
-                duration: 0, // Default duration
-                isPreviewFree: false
-            })),
-            assignments: finalAssignments.map(assignment => ({
-                title: assignment.fileName ? assignment.fileName.replace(/\.[^/.]+$/, "") : "Assignment",
-                description: assignment.description || "Assignment file",
-                dueDate: assignment.dueDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
-                resources: assignment.fileUrl ? [assignment.fileUrl] : []
-            })),
-            createdBy: req.user?._id || req.tokenData?.userId,
-            createdAt: new Date()
-        };
-
-        console.log("📝 [CREATE COURSE] Final course data:", courseData);
-
-        // Create course in database
-        const newCourse = await courseModel.create(courseData);
-
-        return res.status(201).json({
-            success: true,
-            message: "✅ Course created successfully",
-            data: newCourse
-        });
-
-    } catch (error) {
-        console.error('❌ createCourse error:', error);
-        
-        // Delete uploaded files if course creation fails
-        if (req.fileUrls) {
-            try {
-                const filesToDelete = [
-                    ...(req.fileUrls.thumbnail || []),
-                    ...(req.fileUrls.lectures || []),
-                    ...(req.fileUrls.assignments || [])
-                ];
-                
-                for (const file of filesToDelete) {
-                    if (file.fileUrl) {
-                        await deleteFileFromS3(file.fileUrl);
-                    }
-                }
-                console.log("🔄 [ROLLBACK] Uploaded files deleted due to error");
-            } catch (deleteError) {
-                console.error("❌ [ROLLBACK ERROR] Failed to delete files:", deleteError);
-            }
-        }
-
-        return res.status(500).json({
-            message: "❌ Internal server error",
-            error: error.message
-        });
+    if (!title || !description || !category || !level || !price || !thumbnail) {
+      return sendErrorResponse(res, "Missing required fields", HttpStatus.BAD_REQUEST);
     }
+
+    const courseData = {
+      title,
+      description,
+      category,
+      level,
+      price: Number(price),
+      language,
+      duration: Number(duration || 0),
+      isActive: isActive !== false,
+      tags,
+      thumbnail, // ✅ already S3 URL
+      lectures,  // ✅ [{ title, type, url, duration, isPreviewFree }]
+      assignments, // ✅ [{ title, description, resources:[url] }]
+      createdBy: req.tokenData?.userId,
+      createdAt: new Date()
+    };
+
+    const course = await courseModel.create(courseData);
+
+    return sendSuccessResponse(
+      res,
+      course,
+      "Course created successfully",
+      HttpStatus.CREATED
+    );
+
+  } catch (error) {
+    console.error("❌ createCourse error:", error);
+    return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+  }
 };
 
 // Helper function to determine file type
@@ -598,79 +528,29 @@ export const updateCourse = async (req, res) => {
     const userId = req.tokenData?.userId;
     const userRole = req.tokenData?.role;
 
-    if (!id) {
-      return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
-    }
-
     const course = await courseModel.findById(id);
     if (!course) {
       return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
     }
 
-    // Check ownership and permissions
     const isOwner = course.createdBy.toString() === userId;
     const isAdmin = userRole === ROLE_MAP.ADMIN;
-    
     if (!isOwner && !isAdmin) {
-      return sendErrorResponse(res, "You are not authorized to update this course", HttpStatus.FORBIDDEN);
+      return sendErrorResponse(res, "Unauthorized", HttpStatus.FORBIDDEN);
     }
 
-    // Handle file uploads
-    const thumbnailFile = req.files?.thumbnail?.[0];
-    const lectureFiles = req.files?.lectures || [];
-    const assignmentFiles = req.files?.assignments || [];
-
-    if (thumbnailFile && course.thumbnail) {
-      await deleteFileFromS3(course.thumbnail);
-      course.thumbnail = thumbnailFile.location;
-    }
-
-    if (lectureFiles.length > 0) {
-      if (course.lectures && course.lectures.length > 0) {
-        for (const lec of course.lectures) {
-          if (lec.url) await deleteFileFromS3(lec.url);
-        }
-      }
-
-      course.lectures = lectureFiles.map((file) => ({
-        title: req.body.title || "Lecture",
-        type: "video",
-        url: file.location,
-        duration: req.body.duration || 0,
-        isPreviewFree: req.body.isPreviewFree === "true"
-      }));
-    }
-
-    if (assignmentFiles.length > 0) {
-      if (course.assignments && course.assignments.length > 0) {
-        for (const asg of course.assignments) {
-          for (const res of asg.resources) {
-            await deleteFileFromS3(res);
-          }
-        }
-      }
-
-      course.assignments = [
-        {
-          title: req.body.assignmentTitle || "Assignment",
-          description: req.body.assignmentDescription || "",
-          dueDate: req.body.dueDate || null,
-          resources: assignmentFiles.map((x) => x.location)
-        }
-      ];
-    }
-
-    // Update fields
     const updatableFields = [
       "title",
       "description",
       "category",
-      "tags",
       "level",
       "price",
       "language",
       "duration",
-      "rating"
+      "tags",
+      "thumbnail",   // ✅ URL
+      "lectures",    // ✅ array
+      "assignments"  // ✅ array
     ];
 
     updatableFields.forEach((field) => {
@@ -679,20 +559,25 @@ export const updateCourse = async (req, res) => {
       }
     });
 
-    // Only admin can toggle isActive
     if (isAdmin && req.body.isActive !== undefined) {
-      course.isActive = req.body.isActive === "true";
+      course.isActive = req.body.isActive;
     }
 
     await course.save();
 
-    return sendSuccessResponse(res, course, successEn.COURSE_UPDATED, HttpStatus.OK);
+    return sendSuccessResponse(
+      res,
+      course,
+      successEn.COURSE_UPDATED,
+      HttpStatus.OK
+    );
 
   } catch (error) {
-    console.log(error.message);
+    console.error("❌ updateCourse error:", error);
     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
+
 
 // ✅ Delete Course (With Ownership Check)
 export const deleteCourse = async (req, res) => {
@@ -758,126 +643,52 @@ export const deleteCourse = async (req, res) => {
 
 // ✅ Add Lecture (With Ownership Check)
 export const addLecture = async (req, res) => {
-  console.log("===========================================");
-  console.log("🎬 [ADD LECTURE] CONTROLLER START");
-  
   try {
     const { courseId } = req.params;
-    const { title, type, duration, isPreviewFree } = req.body;
+    const { title, type, url, duration, isPreviewFree } = req.body;
     const userId = req.tokenData?.userId;
     const userRole = req.tokenData?.role;
 
-    console.log("📌 [PARAMS] courseId:", courseId);
-    console.log("📋 [BODY] Received body:", {
-      title, type, duration, isPreviewFree
-    });
-    console.log("📦 [FILE URLS from middleware]:", req.fileUrls);
-    console.log("📁 [req.files]:", req.files);
-
-    // Validation
-    if (!courseId || !title || !type) {
-      console.error("❌ [VALIDATION] Missing required fields");
+    if (!title || !type || !url) {
       return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
     }
 
-    // Find course
-    console.log(`🔍 [DB] Finding course: ${courseId}`);
     const course = await courseModel.findById(courseId);
-    
     if (!course) {
-      console.error(`❌ [DB] Course not found: ${courseId}`);
       return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
     }
-    
-    console.log(`✅ [DB] Course found: ${course.title}`);
 
-    // Check ownership and permissions
     const isOwner = course.createdBy.toString() === userId;
     const isAdmin = userRole === ROLE_MAP.ADMIN;
-    
     if (!isOwner && !isAdmin) {
-      console.error(`❌ [AUTH] Unauthorized user: ${userId}`);
-      return sendErrorResponse(res, "You are not authorized to add lectures to this course", HttpStatus.FORBIDDEN);
+      return sendErrorResponse(res, "Unauthorized", HttpStatus.FORBIDDEN);
     }
 
-    // Get file URL
-    console.log("🔗 [FILE URL] Getting file URL...");
-    
-    let fileUrl = null;
-    
-    if (req.fileUrls && req.fileUrls.file && req.fileUrls.file.length > 0) {
-      fileUrl = req.fileUrls.file[0].fileUrl;
-      console.log("✅ [FILE URL] From req.fileUrls:", fileUrl);
-    }
-    else if (req.body.file && Array.isArray(req.body.file) && req.body.file.length > 0) {
-      fileUrl = req.body.file[0].fileUrl;
-      console.log("✅ [FILE URL] From req.body.file:", fileUrl);
-    }
-    else if (req.files?.file?.[0]?.location) {
-      fileUrl = req.files.file[0].location;
-      console.log("✅ [FILE URL] From req.files:", fileUrl);
-    }
-    else {
-      console.error("❌ [FILE URL] No file found in any location!");
-      return sendErrorResponse(res, "Lecture file is required and must be uploaded", HttpStatus.BAD_REQUEST);
-    }
-
-    // Validate file URL
-    if (!fileUrl || !fileUrl.startsWith('http')) {
-      console.error("❌ [FILE URL] Invalid file URL:", fileUrl);
-      return sendErrorResponse(res, "Invalid file URL generated", HttpStatus.BAD_REQUEST);
-    }
-
-    console.log("✅ [FILE URL] Final URL:", fileUrl);
-
-    // Create lecture object
-    const newLecture = {
-      title: title.trim(),
-      type: type,
-      url: fileUrl,
-      duration: duration ? parseInt(duration) : 0,
-      isPreviewFree: isPreviewFree === "true" || isPreviewFree === true,
-      addedBy: userId,
+    const lecture = {
+      title,
+      type,
+      url, // ✅ S3 URL
+      duration: Number(duration || 0),
+      isPreviewFree: Boolean(isPreviewFree),
       addedAt: new Date()
     };
 
-    console.log("📝 [LECTURE] Creating new lecture:", newLecture);
-
-    // Add to course
-    course.lectures.push(newLecture);
-    
-    console.log("💾 [DB] Saving course...");
+    course.lectures.push(lecture);
     await course.save();
-    
-    const addedLecture = course.lectures[course.lectures.length - 1];
-    console.log("✅ [DB] Lecture saved with ID:", addedLecture._id);
 
-    console.log(`📚 [VERIFY] Course now has ${course.lectures.length} lectures`);
-    
-    console.log("✅ [ADD LECTURE] COMPLETED SUCCESSFULLY");
-    console.log("===========================================");
-    
     return sendSuccessResponse(
-      res, 
-      {
-        ...addedLecture.toObject(),
-        courseId: course._id,
-        courseTitle: course.title
-      }, 
-      "Lecture added successfully", 
+      res,
+      lecture,
+      "Lecture added successfully",
       HttpStatus.CREATED
     );
 
   } catch (error) {
-    console.error("\n❌ [ADD LECTURE] ERROR");
-    console.error(`💬 Message: ${error.message}`);
-    console.error(`🔍 Type: ${error.name}`);
-    console.error(`📋 Stack: ${error.stack}`);
-    console.log("===========================================");
-    
+    console.error("❌ addLecture error:", error);
     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
+
 
 // ✅ Remove Lecture (With Ownership Check)
 export const removeLecture = async (req, res) => {
@@ -1652,21 +1463,16 @@ export const unenrollUser = async (req, res) => {
   }
 };
 
-
 // ✅ Add Assignment to Course (With Ownership Check)
 export const addAssignment = async (req, res) => {
   try {
     const { courseId } = req.params;
-    const { title, description, dueDate } = req.body;
+    const { title, description, dueDate, resources } = req.body;
     const userId = req.tokenData?.userId;
     const userRole = req.tokenData?.role;
 
-    console.log("📋 [ADD ASSIGNMENT] Request received");
-    console.log("📌 Course ID:", courseId);
-    console.log("📝 Body:", { title, description, dueDate });
-
-    if (!courseId || !title) {
-      return sendErrorResponse(res, errorEn.MISSING_FIELDS, HttpStatus.BAD_REQUEST);
+    if (!title || !Array.isArray(resources) || resources.length === 0) {
+      return sendErrorResponse(res, "Assignment title and resources required", HttpStatus.BAD_REQUEST);
     }
 
     const course = await courseModel.findById(courseId);
@@ -1674,55 +1480,27 @@ export const addAssignment = async (req, res) => {
       return sendErrorResponse(res, errorEn.NO_DATA_FOUND, HttpStatus.NOT_FOUND);
     }
 
-    // Check ownership and permissions
     const isOwner = course.createdBy.toString() === userId;
     const isAdmin = userRole === ROLE_MAP.ADMIN;
-    
     if (!isOwner && !isAdmin) {
-      return sendErrorResponse(res, "You are not authorized to add assignments to this course", HttpStatus.FORBIDDEN);
+      return sendErrorResponse(res, "Unauthorized", HttpStatus.FORBIDDEN);
     }
 
-    // Get resources files from uploaded files
-    const resourcesFiles = req.files?.resources || [];
-    console.log("📁 Uploaded files:", resourcesFiles);
-
-    if (resourcesFiles.length === 0) {
-      return sendErrorResponse(res, "At least one resource file is required", HttpStatus.BAD_REQUEST);
-    }
-
-    // Extract file URLs from uploaded files
-    const resourceUrls = resourcesFiles.map(file => {
-      if (file.location) return file.location;
-      if (file.fileUrl) return file.fileUrl;
-      return null;
-    }).filter(url => url !== null);
-
-    if (resourceUrls.length === 0) {
-      return sendErrorResponse(res, "Could not extract file URLs from uploaded files", HttpStatus.BAD_REQUEST);
-    }
-
-    const newAssignment = {
-      title: title.trim(),
-      description: description || "",
-      dueDate: dueDate ? new Date(dueDate) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // Default 7 days
-      resources: resourceUrls,
-      createdAt: new Date(),
-      updatedAt: new Date()
+    const assignment = {
+      title,
+      description,
+      dueDate: dueDate ? new Date(dueDate) : null,
+      resources, // ✅ array of S3 URLs
+      createdAt: new Date()
     };
 
-    console.log("📝 New assignment:", newAssignment);
-
-    course.assignments.push(newAssignment);
+    course.assignments.push(assignment);
     await course.save();
 
-    const addedAssignment = course.assignments[course.assignments.length - 1];
-    
-    console.log("✅ Assignment added successfully");
-    
     return sendSuccessResponse(
-      res, 
-      addedAssignment, 
-      "Assignment added successfully", 
+      res,
+      assignment,
+      "Assignment added successfully",
       HttpStatus.CREATED
     );
 
