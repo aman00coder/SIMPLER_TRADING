@@ -157,7 +157,7 @@ const ADMINSTREAMERVIEWERAuth = [verifyToken, checkRole([1, 2, 3])];
 
 // Course CRUD Operations
 router.route("/createCourse").post(
-    ADMINSTREAMERAuth,
+    STREAMERAuth,
     uploadFile([
         { name: "lectures", maxCount: 10 },
         { name: "thumbnail", maxCount: 1 },
@@ -178,7 +178,7 @@ router.route("/getAllCoursesForUser").get(
 
 // ✅ Get single course (only owner or admin can view details)
 router.route("/getSingleCourse/:id").get(
-    ADMINSTREAMERVIEWERAuth,
+    ADMINSTREAMERAuth,
     courseController.getSingleCourse
 );
 
@@ -189,7 +189,7 @@ router.route("/getSingleCourseForEnrolledUsers/:id").get(
 
 // ✅ Update course (only owner or admin can update)
 router.route("/updateCourse/:id").put(
-    ADMINSTREAMERAuth,
+    STREAMERAuth,
     uploadFile([
         { name: "lectures", maxCount: 10 },
         { name: "thumbnail", maxCount: 1 },
@@ -206,7 +206,7 @@ router.route("/deleteCourse/:id").delete(
 
 // ✅ Toggle course active status (admin only)
 router.route("/toggle-course-status/:id").patch(
-    ADMINAuth,
+    STREAMERAuth,
     courseController.toggleCourseStatus
 );
 

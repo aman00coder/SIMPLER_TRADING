@@ -24,48 +24,50 @@ router.route("/createAccount").post(authenticationController.createAccount);
 
 
 // Create basic account (NO TOKEN NEEDED)
-router.route("/create-basic-streamer-account").post(authenticationController.createBasicStreamerAccount);
 
-// File upload routes (NO TOKEN NEEDED - user ID in body)
-router.route("/upload-file").post(
-  uploadSingleFile("file"),
-  authenticationController.uploadFile
-);
 
-router.route("/upload-profile-pic").post(
-  uploadSingleFile("profilePic"),
-  authenticationController.uploadProfilePic
-);
+// router.route("/create-basic-streamer-account").post(authenticationController.createBasicStreamerAccount);
 
-router.route("/upload-qualification-certificate").post(
-  uploadSingleFile("certificateFile"),
-  authenticationController.uploadQualificationCertificate
-);
+// // File upload routes (NO TOKEN NEEDED - user ID in body)
+// router.route("/upload-file").post(
+//   uploadSingleFile("file"),
+//   authenticationController.uploadFile
+// );
 
-router.route("/upload-certification-document").post(
-  uploadSingleFile("certificateFile"),
-  authenticationController.uploadCertificationDocument
-);
+// router.route("/upload-profile-pic").post(
+//   uploadSingleFile("profilePic"),
+//   authenticationController.uploadProfilePic
+// );
 
-// Batch upload for multiple files (NO TOKEN NEEDED)
-router.route("/upload-multiple-files").post(
-  uploadFile([
-    { name: "profilePic", maxCount: 1 },
-    { name: "qualificationCertificates", maxCount: 5 },
-    { name: "certificationFiles", maxCount: 5 }
-  ]),
-  authenticationController.uploadMultipleFiles
-);
+// router.route("/upload-qualification-certificate").post(
+//   uploadSingleFile("certificateFile"),
+//   authenticationController.uploadQualificationCertificate
+// );
 
-// Keep old route for backward compatibility
-router.route("/streamerSignUp").post(
-  uploadFile([
-    { name: "profilePic", maxCount: 1 },
-    { name: "qualificationCertificates", maxCount: 5 },
-    { name: "certificationFiles", maxCount: 5 }
-  ]),
-  authenticationController.createStreamerAccount
-);
+// router.route("/upload-certification-document").post(
+//   uploadSingleFile("certificateFile"),
+//   authenticationController.uploadCertificationDocument
+// );
+
+// // Batch upload for multiple files (NO TOKEN NEEDED)
+// router.route("/upload-multiple-files").post(
+//   uploadFile([
+//     { name: "profilePic", maxCount: 1 },
+//     { name: "qualificationCertificates", maxCount: 5 },
+//     { name: "certificationFiles", maxCount: 5 }
+//   ]),
+//   authenticationController.uploadMultipleFiles
+// );
+
+// // Keep old route for backward compatibility
+// router.route("/streamerSignUp").post(
+//   uploadFile([
+//     { name: "profilePic", maxCount: 1 },
+//     { name: "qualificationCertificates", maxCount: 5 },
+//     { name: "certificationFiles", maxCount: 5 }
+//   ]),
+//   authenticationController.createStreamerAccount
+// );
 
 
 // // router.js में
@@ -77,6 +79,7 @@ router.route("/streamerSignUp").post(
 //   ]),
 //   authenticationController.createStreamerAccount
 // );
+
 
 router.route("/login").post(authenticationController.login);
 router.route("/sendOtpForgetPassword").post(authenticationController.sendOtpForgetPassword);
