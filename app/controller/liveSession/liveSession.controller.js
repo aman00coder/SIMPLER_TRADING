@@ -694,7 +694,6 @@
 
 
 
-
 import mongoose from "mongoose";
 import HttpStatus from "http-status-codes";
 import { v4 as uuidv4 } from "uuid";
@@ -708,6 +707,11 @@ import { ROLE_MAP } from "../../constant/role.js";
 import { roomState } from "../../services/socketState/roomState.js";
 import { uploadSessionRecording, deleteFileFromS3 } from "../../middleware/aws.s3.js";
 import fs from "fs"; 
+import {
+  startFFmpeg,
+  waitForFFmpegExit
+} from "../../services/recording/ffmpegRunner.js";
+
 
 /**
  * Start Live Session
@@ -851,6 +855,7 @@ export const startLiveSession = async (req, res) => {
 };
 
 
+
 export const startLiveSessionRecording = async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -874,11 +879,23 @@ export const startLiveSessionRecording = async (req, res) => {
       return sendErrorResponse(res, "Unauthorized", HttpStatus.UNAUTHORIZED);
     }
 
+    // 🔥 GUARD: prevent double recording
+    if (state.recording?.active) {
+      return sendErrorResponse(
+        res,
+        "Recording already running",
+        HttpStatus.BAD_REQUEST
+      );
+    }
+
     await startLiveRecording({
       state,
       router: state.router,
       sessionId,
     });
+
+    // 🔥 MARK RECORDING ACTIVE
+    state.recording.active = true;
 
     return sendSuccessResponse(
       res,
@@ -896,6 +913,9 @@ export const startLiveSessionRecording = async (req, res) => {
     );
   }
 };
+
+
+
 
 export const stopLiveSessionRecording = async (req, res) => {
   let sessionId;
@@ -920,7 +940,6 @@ export const stopLiveSessionRecording = async (req, res) => {
     const startTime = state.recording.startTime || new Date();
     const durationSec = Math.floor((Date.now() - startTime.getTime()) / 1000);
 
-    // ❗ minimum recording duration
     if (durationSec < 3) {
       return sendErrorResponse(
         res,
@@ -929,30 +948,63 @@ export const stopLiveSessionRecording = async (req, res) => {
       );
     }
 
-    // 🛑 Stop FFmpeg
-    state.recording.ffmpegProcess.kill("SIGINT");
+    // 🔥 STEP 1: STOP accepting new RTP immediately
+    state.recording.active = false;
 
-    // ⏳ WAIT FOR FLUSH
-    await new Promise(resolve => {
-      setTimeout(resolve, 2000);
-    });
+    // 🔥 STEP 2: CLOSE CONSUMERS (STOP RTP FLOW)
+    if (state.recording.videoConsumer) {
+      state.recording.videoConsumer.close();
+      state.recording.videoConsumer = null;
+    }
 
-    if (!fs.existsSync(state.recording.filePath)) {
+    if (state.recording.audioConsumers?.length) {
+      state.recording.audioConsumers.forEach(c => c.close());
+      state.recording.audioConsumers = [];
+    }
+
+    // 🔥 STEP 3: CLOSE PLAIN TRANSPORTS (CRITICAL FIX)
+    if (state.recording.videoTransport) {
+      state.recording.videoTransport.close();
+      state.recording.videoTransport = null;
+    }
+
+    if (state.recording.audioTransports?.length) {
+      state.recording.audioTransports.forEach(t => t.close());
+      state.recording.audioTransports = [];
+    }
+
+    const ffmpeg = state.recording.ffmpegProcess;
+
+    console.log("🛑 Sending SIGINT to FFmpeg...");
+    ffmpeg.kill("SIGINT");
+
+    // 🔥 STEP 4: FORCE EXIT SAFETY (in case SIGINT ignored)
+    const forceKillTimer = setTimeout(() => {
+      if (ffmpeg && !ffmpeg.killed) {
+        console.warn("⚠️ FFmpeg not exiting, force killing...");
+        ffmpeg.kill("SIGKILL");
+      }
+    }, 5000);
+
+    // 🔥 STEP 5: WAIT until MP4 is finalized
+    await waitForFFmpegExit(ffmpeg);
+    clearTimeout(forceKillTimer);
+
+    console.log("✅ FFmpeg finalized recording");
+
+    const filePath = state.recording.filePath;
+
+    if (!fs.existsSync(filePath)) {
       throw new Error("Recording file not created");
     }
 
-    const stats = fs.statSync(state.recording.filePath);
-
-    // ❗ soft validation
+    const stats = fs.statSync(filePath);
     if (stats.size < 100 * 1024) {
       throw new Error("Recording file too small (no frames received)");
     }
 
-    // ☁️ upload
-    const uploadResult = await uploadSessionRecording(
-      state.recording.filePath,
-      sessionId
-    );
+    // ☁️ Upload
+    const uploadResult = await uploadSessionRecording(filePath, sessionId);
 
     const uploadedRecording = {
       fileUrl: uploadResult.fileUrl,
@@ -968,10 +1020,11 @@ export const stopLiveSessionRecording = async (req, res) => {
       { $push: { recordingUrl: uploadedRecording } }
     );
 
-    // cleanup
+    // 🧹 FULL CLEANUP (NO LEAKS)
     state.recording.ffmpegProcess = null;
-    state.recording.videoConsumer = null;
-    state.recording.audioConsumers = [];
+    state.recording.filePath = null;
+    state.recording.startTime = null;
+    state.recording = null;
 
     return sendSuccessResponse(
       res,
@@ -990,7 +1043,6 @@ export const stopLiveSessionRecording = async (req, res) => {
     );
   }
 };
-
 
 
 /**

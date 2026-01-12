@@ -15,8 +15,7 @@ t=0 0
 m=${kind} ${port} RTP/AVP ${pt}
 a=rtpmap:${pt} ${codecName}/${clockRate}
 a=ssrc:${ssrc} cname:mediasoup
-a=framesize:${pt} 1280-720
-a=recvonly
+a=sendrecv
 `;
 };
 

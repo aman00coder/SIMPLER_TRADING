@@ -10,6 +10,7 @@ import liveChatRoutes from "./liveChat/liveChat.routes.js"
 import courseRoutes from "./course/course.routes.js"
 import courseLiveSessionRoutes from "./courseLiveSession/courseLiveSession.routes.js"
 import adminRoutes from "./Admin/admin.routes.js"
+import fileRoutes from "./common/file.routes.js";
 // import streamerRoutes from "./streamer/streamer.routes.js"
 
 
@@ -22,6 +23,7 @@ router.use("/liveChat", liveChatRoutes);
 router.use("/course", courseRoutes);
 router.use("/courseLiveSession", courseLiveSessionRoutes);
 router.use("/admin", adminRoutes);
+router.use("/file", fileRoutes);
 // router.use("/streamer", streamerRoutes);
 
 

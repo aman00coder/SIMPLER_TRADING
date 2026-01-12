@@ -1,4 +1,4 @@
-import transporter from '../services/nodemailer.js';
+import transporter from '../services/common/nodemailer.js';
 
 export const tempStore = new Map();
 

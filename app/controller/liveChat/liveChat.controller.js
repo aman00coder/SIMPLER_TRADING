@@ -4,7 +4,7 @@ import { sendSuccessResponse, sendErrorResponse } from '../../responses/response
 import { errorEn, successEn } from '../../responses/message.js';
 import chatMessageModel from '../../model/liveChat/liveChat.model.js';
 import { ROLE_MAP } from '../../constant/role.js';
-import * as commonServices from "../../services/common.js";
+import * as commonServices from "../../services/common/common.js";
 
 export const sendMessage = async (req, res) => {
   try {
