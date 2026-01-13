@@ -62,7 +62,6 @@ export const createCourse = async (req, res) => {
   }
 };
 
-// Helper function to determine file type
 function getFileType(mimeType) {
     if (mimeType.startsWith('video/')) return 'video';
     if (mimeType === 'application/pdf') return 'pdf';
