@@ -164,6 +164,21 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
   const VIDEO_RTCP_PORT = 5005;
   const AUDIO_BASE_PORT = 6000;
 
+  // ✅ FIX: Initialize recording state BEFORE starting FFmpeg
+  if (!state.recording) {
+    state.recording = {
+      active: false,
+      videoTransport: null,
+      audioTransports: [],
+      videoConsumer: null,
+      audioConsumers: [],
+      recordingPromise: null,
+      startTime: null,
+      ffmpegProcess: null,
+      filePath: null
+    };
+  }
+
   // ================= VIDEO =================
   const videoTransport = await router.createPlainTransport({
     listenIp: { ip: "127.0.0.1" },
@@ -264,16 +279,14 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     state
   });
 
-  // ================= SAVE RECORDING STATE =================
-  state.recording = {
-    active: true,
-    videoTransport,
-    audioTransports,
-    videoConsumer,
-    audioConsumers: audioConsumers.map(a => a.consumer),
-    recordingPromise, // Save the promise
-    startTime: new Date()
-  };
+  // ================= UPDATE RECORDING STATE =================
+  state.recording.active = true;
+  state.recording.videoTransport = videoTransport;
+  state.recording.audioTransports = audioTransports;
+  state.recording.videoConsumer = videoConsumer;
+  state.recording.audioConsumers = audioConsumers.map(a => a.consumer);
+  state.recording.recordingPromise = recordingPromise; // Save the promise
+  state.recording.startTime = new Date();
 
   console.log("✅ Recording started with pre-signed URL flow");
 };
