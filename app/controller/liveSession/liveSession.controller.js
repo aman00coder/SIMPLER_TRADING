@@ -280,55 +280,43 @@ export const startLiveSessionRecording = async (req, res) => {
 
 export const stopLiveSessionRecording = async (req, res) => {
   try {
-    console.log("🎯 STOP RECORDING - MINIMAL VERSION");
-    
-    const sessionId = req.params.sessionId;
-    
-    // ✅ HARDCODE EVERYTHING
+    console.log("🎯 STOP RECORDING - FIXED VERSION");
+
+    const { sessionId } = req.params;
+
+    if (!sessionId) {
+      return res.status(400).json({
+        success: false,
+        message: "sessionId is required"
+      });
+    }
+
     const timestamp = Date.now();
     const fileName = `recording_${sessionId}_${timestamp}.mp4`;
-    const recordingUrl = `https://white-board-s3-bucket.s3.ap-south-1.amazonaws.com/live-recordings/${fileName}`;
-    
-    console.log("🔗 URL generated:", recordingUrl);
-    console.log("🔗 URL length:", recordingUrl.length);
-    console.log("🔗 Last 10 chars:", recordingUrl.substring(recordingUrl.length - 10));
-    
-    // ✅ Create response object
-    const responseObj = {
+
+    const recordingUrl =
+      `https://white-board-s3-bucket.s3.ap-south-1.amazonaws.com/live-recordings/${fileName}`;
+
+    console.log("🔗 Clean URL:", recordingUrl);
+
+    // ✅ DIRECT JSON RESPONSE (NO stringify, NO send)
+    return res.status(200).json({
       success: true,
       message: "Recording URL ready",
       data: {
-        sessionId: sessionId,
-        recordingUrl: recordingUrl,
-        fileName: fileName,
-        timestamp: timestamp,
-        test: "clean_url_test"
+        sessionId,
+        recordingUrl,   // ✅ CLEAN URL (NO %22)
+        fileName,
+        timestamp
       }
-    };
-    
-    // ✅ Convert to string and clean
-    const responseString = JSON.stringify(responseObj);
-    console.log("📝 Response string (first 150 chars):", responseString.substring(0, 150));
-    
-    // ✅ Check for %22
-    if (responseString.includes('%22')) {
-      console.error("❌ FOUND %22 IN RESPONSE!");
-      // Clean it
-      const cleanResponseString = responseString.replace(/%22/g, '');
-      return res.status(200).send(cleanResponseString);
-    }
-    
-    // ✅ Send raw response
-    return res.status(200)
-      .set('Content-Type', 'application/json; charset=utf-8')
-      .send(responseString);
-      
+    });
+
   } catch (error) {
-    console.error("🔥 Minimal version error:", error);
-    return res.status(200).json({
-      success: true,
-      error: error.message,
-      testUrl: "https://test-bucket.s3.amazonaws.com/test.mp4"
+    console.error("🔥 stopLiveSessionRecording error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message
     });
   }
 };
