@@ -297,40 +297,32 @@ export const stopLiveSessionRecording = async (req, res) => {
     console.log("🎬 Sending SIGINT to FFmpeg...");
     ffmpeg.kill("SIGINT");
 
-    // ✅ WAIT FOR FFMPEG + S3 UPLOAD COMPLETION
-    const uploadResult = await state.recording.recordingPromise;
+    // ⏳ WAIT FOR RECORDING PROMISE (UPLOAD INCLUDED)
+    let uploadResult = null;
 
-    if (!uploadResult?.fileUrl) {
-      throw new Error("Recording uploaded but fileUrl missing");
+    try {
+      if (state.recording.recordingPromise) {
+        console.log("⏳ Waiting for FFmpeg + S3 upload...");
+        uploadResult = await state.recording.recordingPromise;
+      }
+    } catch (e) {
+      console.error("❌ Recording promise failed:", e.message);
     }
 
-    console.log("✅ Upload finished:", uploadResult.fileUrl);
-
-    // ✅ SAVE RECORDING IN DB
-    await liveSessionModel.findOneAndUpdate(
-      { sessionId },
-      {
-        $push: {
-          recordingUrl: {
-            fileUrl: uploadResult.fileUrl,
-            fileName: uploadResult.fileName,
-            uploadedAt: new Date()
-          }
-        }
-      }
-    );
-
-    // ✅ CLEAN STATE
+    // 🔒 CLEAN STATE
     state.recording.active = false;
     state.recording.ffmpegProcess = null;
-    state.recording.recordingPromise = null;
+
+    console.log("✅ Recording fully stopped");
 
     return res.status(200).json({
       success: true,
-      message: "Recording stopped & saved successfully",
+      message: "Recording stopped and saved successfully",
       data: {
         sessionId,
-        recordingUrl: uploadResult.fileUrl
+        recordingUrl: uploadResult?.fileUrl || null,
+        fileName: uploadResult?.fileName || null,
+        startedAt: state.recording.startTime
       }
     });
 
@@ -342,6 +334,7 @@ export const stopLiveSessionRecording = async (req, res) => {
     });
   }
 };
+
 
 
 
