@@ -63,6 +63,11 @@ router.post(
   liveSessionController.stopLiveSessionRecording
 );
 
+router.get(
+  "/getLatestRecordingUrl/:sessionId",
+  STREAMERAuth,
+  liveSessionController.getLatestRecordingUrl
+)
 // ================================
 // 📊 RECORDINGS MANAGEMENT
 // ================================
