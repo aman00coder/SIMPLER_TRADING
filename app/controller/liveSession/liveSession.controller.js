@@ -297,45 +297,52 @@ export const stopLiveSessionRecording = async (req, res) => {
     console.log("🎬 Sending SIGINT to FFmpeg...");
     ffmpeg.kill("SIGINT");
 
-    let exited = false;
+    // ✅ WAIT FOR FFMPEG + S3 UPLOAD COMPLETION
+    const uploadResult = await state.recording.recordingPromise;
 
-    // ⏳ Wait max 3 seconds for graceful exit
-    await Promise.race([
-      new Promise((resolve) => {
-        ffmpeg.once("close", () => {
-          exited = true;
-          resolve();
-        });
-      }),
-      new Promise((resolve) => setTimeout(resolve, 3000))
-    ]);
-
-    // 🔥 FORCE KILL if still running
-    if (!exited) {
-      console.warn("⚠️ FFmpeg not exiting, FORCE KILL");
-      ffmpeg.kill("SIGKILL");
+    if (!uploadResult?.fileUrl) {
+      throw new Error("Recording uploaded but fileUrl missing");
     }
 
+    console.log("✅ Upload finished:", uploadResult.fileUrl);
+
+    // ✅ SAVE RECORDING IN DB
+    await liveSessionModel.findOneAndUpdate(
+      { sessionId },
+      {
+        $push: {
+          recordingUrl: {
+            fileUrl: uploadResult.fileUrl,
+            fileName: uploadResult.fileName,
+            uploadedAt: new Date()
+          }
+        }
+      }
+    );
+
+    // ✅ CLEAN STATE
     state.recording.active = false;
+    state.recording.ffmpegProcess = null;
+    state.recording.recordingPromise = null;
 
     return res.status(200).json({
       success: true,
-      message: "Recording stopped (upload in progress)",
+      message: "Recording stopped & saved successfully",
       data: {
         sessionId,
-        startedAt: state.recording.startTime
+        recordingUrl: uploadResult.fileUrl
       }
     });
 
   } catch (error) {
     console.error("🔥 stopLiveSessionRecording error:", error.message);
-
     return res.status(500).json({
       success: false,
       message: error.message
     });
   }
 };
+
 
 
 /**
