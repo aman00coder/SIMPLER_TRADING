@@ -1,7 +1,6 @@
 import { spawn } from "child_process";
 
 export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
-
   const args = [
     "-y", // Overwrite output file
 
@@ -73,7 +72,10 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
 
   // Log FFmpeg output
   ffmpeg.stdout.on('data', (data) => {
-    console.log('🎥 FFmpeg stdout:', data.toString().trim());
+    const output = data.toString().trim();
+    if (output) {
+      console.log('🎥 FFmpeg stdout:', output);
+    }
   });
 
   ffmpeg.stderr.on('data', (data) => {
@@ -81,6 +83,11 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     if (line && !line.includes("frame=")) { // Filter stats spam
       console.log('🎥 FFmpeg:', line);
     }
+  });
+
+  // Handle process errors
+  ffmpeg.on('error', (err) => {
+    console.error('❌ FFmpeg process error:', err.message);
   });
 
   return ffmpeg;
@@ -91,9 +98,18 @@ export const waitForFFmpegExit = (ffmpegProcess) => {
   return new Promise((resolve, reject) => {
     let settled = false;
 
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      console.warn("⚠️ FFmpeg exit timeout - forcing kill");
+      ffmpegProcess.kill("SIGKILL");
+      reject(new Error("FFmpeg exit timeout (10 seconds)"));
+    }, 10000); // 10 seconds timeout
+
     ffmpegProcess.once("close", (code, signal) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timeout);
 
       console.log(`🎬 FFmpeg closed - Code: ${code}, Signal: ${signal}`);
       
@@ -109,7 +125,31 @@ export const waitForFFmpegExit = (ffmpegProcess) => {
     ffmpegProcess.once("error", (err) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timeout);
       reject(err);
     });
   });
+};
+
+// Additional helper function for better error handling
+export const killFFmpegProcess = (ffmpegProcess) => {
+  if (!ffmpegProcess || ffmpegProcess.killed) return true;
+  
+  try {
+    // First try graceful shutdown
+    ffmpegProcess.kill("SIGINT");
+    
+    // Force kill after 3 seconds if still alive
+    setTimeout(() => {
+      if (!ffmpegProcess.killed) {
+        console.warn("🔄 Force killing FFmpeg...");
+        ffmpegProcess.kill("SIGKILL");
+      }
+    }, 3000);
+    
+    return true;
+  } catch (err) {
+    console.error("❌ Error killing FFmpeg process:", err.message);
+    return false;
+  }
 };

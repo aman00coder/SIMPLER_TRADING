@@ -99,13 +99,23 @@ const startFFmpegWithS3Upload = ({
       output: localOutput
     });
 
+    // ✅ FIX: Ensure state.recording exists before setting properties
+    if (!state.recording) {
+      state.recording = {};
+    }
+    
     // Save FFmpeg process reference in state
     state.recording.ffmpegProcess = ffmpegProcess;
-    state.recording.filePath = localOutput;
+    state.recording.filePath = localOutput; // ✅ Set filePath here
+
+    console.log("📁 File path saved:", localOutput);
 
     // Monitor FFmpeg stderr for logs
     ffmpegProcess.stderr.on('data', (data) => {
-      console.log('🎥 FFmpeg:', data.toString().trim());
+      const line = data.toString().trim();
+      if (line && !line.includes("frame=")) {
+        console.log('🎥 FFmpeg:', line);
+      }
     });
 
     // Handle FFmpeg completion
@@ -158,6 +168,21 @@ const startFFmpegWithS3Upload = ({
 export const startLiveRecording = async ({ state, router, sessionId }) => {
   const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
   if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
+
+  // ✅ FIX: Initialize recording state BEFORE starting FFmpeg
+  if (!state.recording) {
+    state.recording = {
+      active: false,
+      videoTransport: null,
+      audioTransports: [],
+      videoConsumer: null,
+      audioConsumers: [],
+      recordingPromise: null,
+      startTime: null,
+      ffmpegProcess: null,
+      filePath: null
+    };
+  }
 
   // ================= FIXED PORTS =================
   const VIDEO_PORT = 5004;
@@ -264,16 +289,56 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     state
   });
 
-  // ================= SAVE RECORDING STATE =================
-  state.recording = {
-    active: true,
-    videoTransport,
-    audioTransports,
-    videoConsumer,
-    audioConsumers: audioConsumers.map(a => a.consumer),
-    recordingPromise, // Save the promise
-    startTime: new Date()
-  };
+  // ================= UPDATE RECORDING STATE =================
+  // ✅ CRITICAL FIX: Set ALL properties properly
+  state.recording.active = true;
+  state.recording.videoTransport = videoTransport;
+  state.recording.audioTransports = audioTransports;
+  state.recording.videoConsumer = videoConsumer;
+  state.recording.audioConsumers = audioConsumers.map(a => a.consumer);
+  state.recording.recordingPromise = recordingPromise;
+  // ✅ CRITICAL: Set startTime as Date object
+  state.recording.startTime = new Date();
+  
+  // ✅ Set filePath from startFFmpegWithS3Upload
+  // Note: filePath will be set inside startFFmpegWithS3Upload
 
   console.log("✅ Recording started with pre-signed URL flow");
+  console.log("🎬 Start Time set to:", state.recording.startTime.toISOString());
+  console.log("📊 Recording state initialized successfully");
+
+  // Handle recording promise completion
+  recordingPromise
+    .then((uploadResult) => {
+      console.log("✅ Recording completed successfully");
+      
+      // Update state after successful recording
+      if (state.recording) {
+        state.recording.active = false;
+        state.recording.completed = true;
+        state.recording.uploadResult = uploadResult;
+        state.recording.endTime = new Date();
+        
+        // Calculate duration
+        if (state.recording.startTime && state.recording.endTime) {
+          const duration = Math.floor(
+            (state.recording.endTime.getTime() - state.recording.startTime.getTime()) / 1000
+          );
+          state.recording.duration = duration;
+          console.log(`⏱️ Recording duration: ${duration} seconds`);
+        }
+      }
+    })
+    .catch((error) => {
+      console.error("❌ Recording failed:", error);
+      
+      // Update state on error
+      if (state.recording) {
+        state.recording.active = false;
+        state.recording.error = error.message;
+        state.recording.endTime = new Date();
+      }
+    });
+
+  return state.recording;
 };

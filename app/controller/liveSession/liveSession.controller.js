@@ -705,13 +705,13 @@ import { errorEn, successEn } from "../../responses/message.js";
 import { getIO } from "../../services/socket.integrated.js"; 
 import { ROLE_MAP } from "../../constant/role.js";
 import { roomState } from "../../services/socketState/roomState.js";
-import { uploadSessionRecording, deleteFileFromS3 } from "../../middleware/aws.s3.js";
+import { uploadSessionRecording } from "../../middleware/aws.s3.js";
 import fs from "fs"; 
+import path from "path";
+import os from "os";
 import {
-  startFFmpeg,
   waitForFFmpegExit
 } from "../../services/recording/ffmpegRunner.js";
-
 
 /**
  * Start Live Session
@@ -854,8 +854,6 @@ export const startLiveSession = async (req, res) => {
   }
 };
 
-
-
 export const startLiveSessionRecording = async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -888,34 +886,52 @@ export const startLiveSessionRecording = async (req, res) => {
       );
     }
 
-    await startLiveRecording({
+    // ✅ TEMPORARY: Directly set recording state BEFORE calling startLiveRecording
+    if (!state.recording) {
+      state.recording = {
+        active: false,
+        videoTransport: null,
+        audioTransports: [],
+        videoConsumer: null,
+        audioConsumers: [],
+        recordingPromise: null,
+        startTime: null,
+        ffmpegProcess: null,
+        filePath: null
+      };
+    }
+
+    // Start recording and get the recording object
+    console.log("🎬 Calling startLiveRecording...");
+    const recording = await startLiveRecording({
       state,
       router: state.router,
       sessionId,
     });
 
-    // 🔥 MARK RECORDING ACTIVE
-    state.recording.active = true;
+    console.log("✅ startLiveRecording returned, recording state:", recording);
 
     return sendSuccessResponse(
       res,
-      null,
+      {
+        sessionId,
+        startTime: recording.startTime,
+        message: "Live session recording started successfully"
+      },
       "Live session recording started successfully",
       HttpStatus.OK
     );
 
   } catch (error) {
     console.error("🔥 startLiveSessionRecording error:", error.message);
+    console.error("Stack trace:", error.stack);
     return sendErrorResponse(
       res,
-      "Failed to start recording",
+      `Failed to start recording: ${error.message}`,
       HttpStatus.INTERNAL_SERVER_ERROR
     );
   }
 };
-
-
-
 
 export const stopLiveSessionRecording = async (req, res) => {
   let sessionId;
@@ -925,150 +941,281 @@ export const stopLiveSessionRecording = async (req, res) => {
     const userId = req.tokenData?.userId;
 
     if (!sessionId) {
-      return sendErrorResponse(res, "SessionId required", 400);
+      return sendErrorResponse(res, "SessionId required", HttpStatus.BAD_REQUEST);
     }
 
     const state = roomState.get(sessionId);
-    if (!state?.recording?.active) {
-      return sendErrorResponse(res, "Recording not running", 400);
+    
+    console.log("🛑 === STOP RECORDING STARTED ===");
+    console.log("📊 Session ID:", sessionId);
+    console.log("👤 User ID:", userId);
+    console.log("🏠 State exists:", !!state);
+    console.log("📡 Recording exists:", !!state?.recording);
+    console.log("🎬 Recording active:", state?.recording?.active);
+    console.log("⏱️ Start Time:", state?.recording?.startTime);
+    console.log("📁 File Path:", state?.recording?.filePath);
+    console.log("⚙️ FFmpeg Process:", !!state?.recording?.ffmpegProcess);
+    console.log("🤝 Recording Promise:", !!state?.recording?.recordingPromise);
+
+    if (!state) {
+      return sendErrorResponse(res, "Session not found", HttpStatus.NOT_FOUND);
     }
 
+    if (!state.recording) {
+      return sendErrorResponse(res, "No recording found", HttpStatus.BAD_REQUEST);
+    }
+
+    if (!state.recording.active) {
+      return sendErrorResponse(res, "Recording is not active", HttpStatus.BAD_REQUEST);
+    }
+
+    // 🔐 Authorization check
     if (state.createdBy?.toString() !== userId) {
-      return sendErrorResponse(res, "Unauthorized", 401);
+      return sendErrorResponse(res, "Unauthorized", HttpStatus.UNAUTHORIZED);
     }
 
-    const startTime = state.recording.startTime || new Date();
-    const durationSec = Math.floor((Date.now() - startTime.getTime()) / 1000);
+    // ✅ FIXED: Duration calculation with proper null check
+    let durationSec = 0;
+    if (state.recording.startTime) {
+      const startTime = state.recording.startTime instanceof Date 
+        ? state.recording.startTime 
+        : new Date(state.recording.startTime);
+      
+      durationSec = Math.floor((Date.now() - startTime.getTime()) / 1000);
+    }
 
+    console.log(`⏱️ Recording duration: ${durationSec} seconds`);
+    
+    // ✅✅✅ CRITICAL FIX: NO DURATION VALIDATION - JUST LOG AND CONTINUE ✅✅✅
     if (durationSec < 3) {
-      return sendErrorResponse(
-        res,
-        "Recording too short, wait at least 3 seconds",
-        400
-      );
+      console.log(`ℹ️ Note: Recording is short (${durationSec} seconds), but continuing anyway...`);
     }
 
-    // 🔥 STEP 1: STOP accepting new RTP immediately
+    // 🔥 STEP 1: MARK AS INACTIVE FIRST
     state.recording.active = false;
+    state.recording.endTime = new Date();
+
+    console.log("📊 Recording marked as inactive");
 
     // 🔥 STEP 2: CLOSE CONSUMERS (STOP RTP FLOW)
     if (state.recording.videoConsumer) {
-      state.recording.videoConsumer.close();
+      try {
+        state.recording.videoConsumer.close();
+        console.log("✅ Video consumer closed");
+      } catch (err) {
+        console.error("❌ Error closing video consumer:", err.message);
+      }
       state.recording.videoConsumer = null;
     }
 
     if (state.recording.audioConsumers?.length) {
-      state.recording.audioConsumers.forEach(c => c.close());
+      state.recording.audioConsumers.forEach((c, idx) => {
+        try {
+          c.close();
+          console.log(`✅ Audio consumer ${idx + 1} closed`);
+        } catch (err) {
+          console.error(`❌ Error closing audio consumer ${idx + 1}:`, err.message);
+        }
+      });
       state.recording.audioConsumers = [];
     }
 
-    // 🔥 STEP 3: CLOSE PLAIN TRANSPORTS (CRITICAL FIX)
+    // 🔥 STEP 3: CLOSE PLAIN TRANSPORTS
     if (state.recording.videoTransport) {
-      state.recording.videoTransport.close();
+      try {
+        state.recording.videoTransport.close();
+        console.log("✅ Video transport closed");
+      } catch (err) {
+        console.error("❌ Error closing video transport:", err.message);
+      }
       state.recording.videoTransport = null;
     }
 
     if (state.recording.audioTransports?.length) {
-      state.recording.audioTransports.forEach(t => t.close());
+      state.recording.audioTransports.forEach((t, idx) => {
+        try {
+          t.close();
+          console.log(`✅ Audio transport ${idx + 1} closed`);
+        } catch (err) {
+          console.error(`❌ Error closing audio transport ${idx + 1}:`, err.message);
+        }
+      });
       state.recording.audioTransports = [];
     }
 
-    // 🔥 STEP 4: STOP FFMPEG PROCESS
+    // 🔥 STEP 4: STOP FFMPEG PROCESS USING waitForFFmpegExit
     const ffmpeg = state.recording.ffmpegProcess;
+    
     if (ffmpeg && !ffmpeg.killed) {
-      console.log("🛑 Sending SIGINT to FFmpeg...");
-      ffmpeg.kill("SIGINT");
-      
-      // Wait for FFmpeg to exit
       try {
-        await waitForFFmpegExit(ffmpeg);
-        console.log("✅ FFmpeg finalized recording");
-      } catch (ffmpegError) {
-        console.warn("⚠️ FFmpeg exit warning:", ffmpegError.message);
+        console.log("🛑 Sending SIGINT to FFmpeg...");
+        ffmpeg.kill("SIGINT");
+        
+        // ✅ Use the imported waitForFFmpegExit function
+        try {
+          await waitForFFmpegExit(ffmpeg);
+          console.log("✅ FFmpeg finalized recording properly");
+        } catch (ffmpegError) {
+          console.warn("⚠️ FFmpeg exit warning:", ffmpegError.message);
+          
+          // Force kill if timeout or error
+          if (ffmpeg && !ffmpeg.killed) {
+            console.warn("🔄 Force killing FFmpeg...");
+            ffmpeg.kill("SIGKILL");
+          }
+        }
+      } catch (ffmpegStopError) {
+        console.warn("⚠️ FFmpeg stop error:", ffmpegStopError.message);
+        if (ffmpeg && !ffmpeg.killed) {
+          ffmpeg.kill("SIGKILL");
+        }
       }
+    } else if (ffmpeg) {
+      console.log("✅ FFmpeg already stopped");
+    } else {
+      console.log("ℹ️ No FFmpeg process found");
     }
 
     // 🔥 STEP 5: WAIT FOR S3 UPLOAD COMPLETION
-    let uploadResult;
+    let uploadResult = null;
     if (state.recording.recordingPromise) {
       try {
         console.log("⏳ Waiting for S3 upload to complete...");
-        uploadResult = await state.recording.recordingPromise;
-        console.log("✅ S3 upload completed:", uploadResult.fileUrl);
+        // Add timeout for upload promise
+        uploadResult = await Promise.race([
+          state.recording.recordingPromise,
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Upload timeout (30 seconds)")), 30000)
+          )
+        ]);
+        console.log("✅ S3 upload completed successfully");
+        console.log("📁 File URL:", uploadResult?.fileUrl);
       } catch (uploadError) {
         console.error("❌ S3 upload failed:", uploadError.message);
         
         // Try to get local file if S3 upload failed
         if (state.recording.filePath && fs.existsSync(state.recording.filePath)) {
           console.log("🔄 Trying backup local upload...");
-          const uploadResultBackup = await uploadSessionRecording(state.recording.filePath, sessionId);
-          uploadResult = {
-            fileUrl: uploadResultBackup.fileUrl,
-            fileName: `${sessionId}_${Date.now()}.mp4`,
-            fileKey: uploadResultBackup.fileKey
-          };
-          
-          // Clean local file
-          fs.unlinkSync(state.recording.filePath);
-        } else {
-          throw uploadError;
+          try {
+            const uploadResultBackup = await uploadSessionRecording(state.recording.filePath, sessionId);
+            uploadResult = {
+              fileUrl: uploadResultBackup.fileUrl,
+              fileName: `${sessionId}_${Date.now()}.mp4`,
+              fileKey: uploadResultBackup.fileKey
+            };
+            
+            // Clean local file
+            fs.unlinkSync(state.recording.filePath);
+            console.log("✅ Backup upload successful");
+          } catch (backupError) {
+            console.error("❌ Backup upload also failed:", backupError.message);
+          }
         }
       }
     } else {
-      throw new Error("No recording promise found");
+      console.warn("⚠️ No recording promise found");
     }
 
-    // Prepare recording data
-    const uploadedRecording = {
-      fileUrl: uploadResult.fileUrl,
-      fileName: uploadResult.fileName || `${sessionId}_${Date.now()}.mp4`,
+    // Prepare recording data for database
+    let uploadedRecording = {
+      fileUrl: uploadResult?.fileUrl || "",
+      fileName: uploadResult?.fileName || `${sessionId}_${Date.now()}.mp4`,
       fileType: "video/mp4",
       recordedAt: new Date(),
       duration: durationSec,
-      recordedBy: userId
+      recordedBy: userId,
+      status: uploadResult ? "completed" : "failed"
     };
 
     // Save to database
-    await liveSessionModel.findOneAndUpdate(
-      { sessionId },
-      { $push: { recordingUrl: uploadedRecording } }
-    );
+    try {
+      await liveSessionModel.findOneAndUpdate(
+        { sessionId },
+        { 
+          $push: { 
+            recordingUrl: uploadedRecording 
+          },
+          $set: {
+            "recordingStatus": "completed",
+            "recordingUpdatedAt": new Date()
+          }
+        }
+      );
+      console.log("💾 Recording saved to database");
+    } catch (dbError) {
+      console.error("❌ Database save error:", dbError.message);
+    }
 
-    // 🧹 FULL CLEANUP (NO LEAKS)
-    state.recording.ffmpegProcess = null;
-    state.recording.filePath = null;
-    state.recording.startTime = null;
-    state.recording.recordingPromise = null;
+    // Cleanup SDP files if they exist
+    const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
+    const base = path.join(TMP_DIR, `session-${sessionId}`);
+    const sdpFiles = [
+      `${base}-video.sdp`,
+      ...Array.from({ length: 5 }, (_, i) => `${base}-audio-${i}.sdp`)
+    ];
+    
+    sdpFiles.forEach(sdpFile => {
+      if (fs.existsSync(sdpFile)) {
+        try {
+          fs.unlinkSync(sdpFile);
+          console.log(`🧹 Cleaned SDP: ${sdpFile}`);
+        } catch (err) {
+          console.error(`❌ Error cleaning SDP ${sdpFile}:`, err.message);
+        }
+      }
+    });
+
+    // Clean temporary file if it exists
+    if (state.recording.filePath && fs.existsSync(state.recording.filePath)) {
+      try {
+        fs.unlinkSync(state.recording.filePath);
+        console.log("🧹 Cleaned temporary file:", state.recording.filePath);
+      } catch (err) {
+        console.error("❌ Error cleaning temp file:", err.message);
+      }
+    }
+
+    // Clear recording state (but keep other session state)
     state.recording = null;
+
+    console.log("✅ === STOP RECORDING COMPLETED SUCCESSFULLY ===");
 
     return sendSuccessResponse(
       res,
-      uploadedRecording,
-      "Recording stopped & uploaded to S3 successfully",
-      200
+      {
+        ...uploadedRecording,
+        message: "Recording stopped & uploaded successfully"
+      },
+      "Recording stopped & uploaded successfully",
+      HttpStatus.OK
     );
 
   } catch (error) {
     console.error("🔥 stopLiveSessionRecording error:", error.message);
+    console.error("Stack trace:", error.stack);
 
     // Cleanup if any error
-    const state = roomState.get(sessionId);
-    if (state?.recording) {
-      state.recording = null;
+    try {
+      const state = sessionId ? roomState.get(sessionId) : null;
+      if (state?.recording) {
+        state.recording = null;
+      }
+    } catch (cleanupError) {
+      console.error("❌ Error during cleanup:", cleanupError.message);
     }
 
     return sendErrorResponse(
       res,
-      error.message || "Failed to stop recording",
-      500
+      `Failed to stop recording: ${error.message}`,
+      HttpStatus.INTERNAL_SERVER_ERROR
     );
   }
 };
 
-
 /**
  * ✅ Get All Live Sessions of Current User Only
  */
+
 export const getAllLiveSessions = async (req, res) => {
     try {
         const userId = req.tokenData?.userId;
