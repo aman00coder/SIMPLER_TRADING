@@ -886,12 +886,30 @@ export const startLiveSessionRecording = async (req, res) => {
       );
     }
 
+    // ✅ TEMPORARY: Directly set recording state BEFORE calling startLiveRecording
+    if (!state.recording) {
+      state.recording = {
+        active: false,
+        videoTransport: null,
+        audioTransports: [],
+        videoConsumer: null,
+        audioConsumers: [],
+        recordingPromise: null,
+        startTime: null,
+        ffmpegProcess: null,
+        filePath: null
+      };
+    }
+
     // Start recording and get the recording object
+    console.log("🎬 Calling startLiveRecording...");
     const recording = await startLiveRecording({
       state,
       router: state.router,
       sessionId,
     });
+
+    console.log("✅ startLiveRecording returned, recording state:", recording);
 
     return sendSuccessResponse(
       res,
@@ -968,9 +986,9 @@ export const stopLiveSessionRecording = async (req, res) => {
 
     console.log(`⏱️ Recording duration: ${durationSec} seconds`);
     
-    // 🔥 TEMPORARY: Remove duration validation or make it warning only
+    // ✅✅✅ CRITICAL FIX: NO DURATION VALIDATION - JUST LOG AND CONTINUE ✅✅✅
     if (durationSec < 3) {
-      console.warn(`⚠️ Warning: Recording is short (${durationSec} seconds), but continuing...`);
+      console.log(`ℹ️ Note: Recording is short (${durationSec} seconds), but continuing anyway...`);
     }
 
     // 🔥 STEP 1: MARK AS INACTIVE FIRST
