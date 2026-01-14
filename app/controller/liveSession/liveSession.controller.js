@@ -280,9 +280,12 @@ export const startLiveSessionRecording = async (req, res) => {
 
 export const stopLiveSessionRecording = async (req, res) => {
   try {
-    console.log("🎯 STOP RECORDING - FIXED VERSION");
+    console.log("🎯 STOP RECORDING - DEBUG VERSION");
 
     const { sessionId } = req.params;
+
+    console.log("🆔 sessionId:", sessionId);
+    console.log("🆔 typeof sessionId:", typeof sessionId);
 
     if (!sessionId) {
       return res.status(400).json({
@@ -294,25 +297,39 @@ export const stopLiveSessionRecording = async (req, res) => {
     const timestamp = Date.now();
     const fileName = `recording_${sessionId}_${timestamp}.mp4`;
 
+    console.log("📄 fileName:", fileName);
+    console.log("📄 fileName last char:", fileName[fileName.length - 1]);
+
     const recordingUrl =
       `https://white-board-s3-bucket.s3.ap-south-1.amazonaws.com/live-recordings/${fileName}`;
 
-    console.log("🔗 Clean URL:", recordingUrl);
+    // 🔥 MOST IMPORTANT DEBUG
+    console.log("🔗 RAW recordingUrl =>", recordingUrl);
+    console.log("🔗 typeof recordingUrl =>", typeof recordingUrl);
+    console.log("🔗 last char =>", recordingUrl[recordingUrl.length - 1]);
+    console.log(
+      "🔗 charCode last =>",
+      recordingUrl.charCodeAt(recordingUrl.length - 1)
+    );
 
-    // ✅ DIRECT JSON RESPONSE (NO stringify, NO send)
+    // Safety check (should NEVER trigger)
+    if (recordingUrl.includes('"')) {
+      console.error("❌ DOUBLE QUOTE FOUND INSIDE recordingUrl STRING");
+    }
+
     return res.status(200).json({
       success: true,
       message: "Recording URL ready",
       data: {
         sessionId,
-        recordingUrl,   // ✅ CLEAN URL (NO %22)
+        recordingUrl,
         fileName,
         timestamp
       }
     });
 
   } catch (error) {
-    console.error("🔥 stopLiveSessionRecording error:", error.message);
+    console.error("🔥 stopLiveSessionRecording error:", error);
 
     return res.status(500).json({
       success: false,
@@ -320,6 +337,7 @@ export const stopLiveSessionRecording = async (req, res) => {
     });
   }
 };
+
 
 /**
  * ✅ Get Latest Recording URL for a Session
