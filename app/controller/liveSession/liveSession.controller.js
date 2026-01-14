@@ -280,56 +280,43 @@ export const startLiveSessionRecording = async (req, res) => {
 
 export const stopLiveSessionRecording = async (req, res) => {
   try {
-    console.log("🎯 STOP RECORDING - DEBUG VERSION");
+    console.log("🛑 STOP LIVE SESSION RECORDING");
 
     const { sessionId } = req.params;
+    const state = roomState.get(sessionId);
 
-    console.log("🆔 sessionId:", sessionId);
-    console.log("🆔 typeof sessionId:", typeof sessionId);
-
-    if (!sessionId) {
+    if (!state || !state.recording || !state.recording.ffmpegProcess) {
       return res.status(400).json({
         success: false,
-        message: "sessionId is required"
+        message: "No active recording found"
       });
     }
 
-    const timestamp = Date.now();
-    const fileName = `recording_${sessionId}_${timestamp}.mp4`;
+    console.log("🎬 FFmpeg process found, stopping...");
 
-    console.log("📄 fileName:", fileName);
-    console.log("📄 fileName last char:", fileName[fileName.length - 1]);
+    // 🔴 1️⃣ Gracefully stop FFmpeg
+    state.recording.ffmpegProcess.kill("SIGINT");
 
-    const recordingUrl =
-      `https://white-board-s3-bucket.s3.ap-south-1.amazonaws.com/live-recordings/${fileName}`;
+    // 🔴 2️⃣ WAIT for FFmpeg to exit & upload to S3
+    await waitForFFmpegExit(state.recording.ffmpegProcess);
 
-    // 🔥 MOST IMPORTANT DEBUG
-    console.log("🔗 RAW recordingUrl =>", recordingUrl);
-    console.log("🔗 typeof recordingUrl =>", typeof recordingUrl);
-    console.log("🔗 last char =>", recordingUrl[recordingUrl.length - 1]);
-    console.log(
-      "🔗 charCode last =>",
-      recordingUrl.charCodeAt(recordingUrl.length - 1)
-    );
+    console.log("✅ FFmpeg stopped & upload completed");
 
-    // Safety check (should NEVER trigger)
-    if (recordingUrl.includes('"')) {
-      console.error("❌ DOUBLE QUOTE FOUND INSIDE recordingUrl STRING");
-    }
+    // 🔴 3️⃣ OPTIONAL: save recording URL in DB (recommended)
+    // NOTE: upload result already logged inside startFFmpegWithS3Upload
+    state.recording.active = false;
 
     return res.status(200).json({
       success: true,
-      message: "Recording URL ready",
+      message: "Recording stopped and uploaded successfully",
       data: {
         sessionId,
-        recordingUrl,
-        fileName,
-        timestamp
+        startedAt: state.recording.startTime
       }
     });
 
   } catch (error) {
-    console.error("🔥 stopLiveSessionRecording error:", error);
+    console.error("🔥 stopLiveSessionRecording error:", error.message);
 
     return res.status(500).json({
       success: false,
@@ -337,6 +324,7 @@ export const stopLiveSessionRecording = async (req, res) => {
     });
   }
 };
+
 
 
 /**
