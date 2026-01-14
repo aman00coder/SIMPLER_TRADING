@@ -292,26 +292,66 @@ export const stopLiveSessionRecording = async (req, res) => {
       });
     }
 
-    const ffmpeg = state.recording.ffmpegProcess;
+    const recording = state.recording;
 
+    // ================= 1️⃣ STOP FFMPEG =================
     console.log("🎬 Sending SIGINT to FFmpeg...");
-    ffmpeg.kill("SIGINT");
+    try {
+      recording.ffmpegProcess.kill("SIGINT");
+    } catch (e) {
+      console.warn("⚠️ FFmpeg already stopped");
+    }
 
-    // ⏳ WAIT FOR RECORDING PROMISE (UPLOAD INCLUDED)
+    // ================= 2️⃣ CLOSE MEDIASOUP CONSUMERS =================
+    console.log("🔌 Closing media consumers...");
+
+    try {
+      recording.videoConsumer?.close();
+    } catch {}
+
+    if (Array.isArray(recording.audioConsumers)) {
+      recording.audioConsumers.forEach(c => {
+        try { c.close(); } catch {}
+      });
+    }
+
+    // ================= 3️⃣ CLOSE MEDIASOUP TRANSPORTS =================
+    console.log("🔌 Closing transports...");
+
+    try {
+      recording.videoTransport?.close();
+    } catch {}
+
+    if (Array.isArray(recording.audioTransports)) {
+      recording.audioTransports.forEach(t => {
+        try { t.close(); } catch {}
+      });
+    }
+
+    // ================= 4️⃣ WAIT FOR UPLOAD =================
     let uploadResult = null;
 
     try {
-      if (state.recording.recordingPromise) {
-        console.log("⏳ Waiting for FFmpeg + S3 upload...");
-        uploadResult = await state.recording.recordingPromise;
+      if (recording.recordingPromise) {
+        console.log("⏳ Waiting for FFmpeg flush + S3 upload...");
+        uploadResult = await recording.recordingPromise;
       }
-    } catch (e) {
-      console.error("❌ Recording promise failed:", e.message);
+    } catch (err) {
+      console.error("❌ Upload wait failed:", err.message);
     }
 
-    // 🔒 CLEAN STATE
-    state.recording.active = false;
-    state.recording.ffmpegProcess = null;
+    // ================= 5️⃣ CLEAN STATE =================
+    state.recording = {
+      active: false,
+      videoTransport: null,
+      audioTransports: [],
+      videoConsumer: null,
+      audioConsumers: [],
+      recordingPromise: null,
+      startTime: recording.startTime || null,
+      ffmpegProcess: null,
+      filePath: null
+    };
 
     console.log("✅ Recording fully stopped");
 
@@ -322,7 +362,7 @@ export const stopLiveSessionRecording = async (req, res) => {
         sessionId,
         recordingUrl: uploadResult?.fileUrl || null,
         fileName: uploadResult?.fileName || null,
-        startedAt: state.recording.startTime
+        startedAt: recording.startTime
       }
     });
 
