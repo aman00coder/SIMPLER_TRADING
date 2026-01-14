@@ -705,13 +705,13 @@ import { errorEn, successEn } from "../../responses/message.js";
 import { getIO } from "../../services/socket.integrated.js"; 
 import { ROLE_MAP } from "../../constant/role.js";
 import { roomState } from "../../services/socketState/roomState.js";
-import { uploadSessionRecording, deleteFileFromS3 } from "../../middleware/aws.s3.js";
+import { uploadSessionRecording } from "../../middleware/aws.s3.js";
 import fs from "fs"; 
+import path from "path";
+import os from "os";
 import {
-  startFFmpeg,
   waitForFFmpegExit
 } from "../../services/recording/ffmpegRunner.js";
-
 
 /**
  * Start Live Session
@@ -854,8 +854,6 @@ export const startLiveSession = async (req, res) => {
   }
 };
 
-
-
 export const startLiveSessionRecording = async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -917,9 +915,6 @@ export const startLiveSessionRecording = async (req, res) => {
   }
 };
 
-
-
-
 export const stopLiveSessionRecording = async (req, res) => {
   let sessionId;
 
@@ -964,7 +959,6 @@ export const stopLiveSessionRecording = async (req, res) => {
     // ✅ FIXED: Duration calculation with proper null check
     let durationSec = 0;
     if (state.recording.startTime) {
-      // Convert to Date object if it's a string or timestamp
       const startTime = state.recording.startTime instanceof Date 
         ? state.recording.startTime 
         : new Date(state.recording.startTime);
@@ -975,15 +969,8 @@ export const stopLiveSessionRecording = async (req, res) => {
     console.log(`⏱️ Recording duration: ${durationSec} seconds`);
     
     // 🔥 TEMPORARY: Remove duration validation or make it warning only
-    // For development, you might want to remove this validation
     if (durationSec < 3) {
       console.warn(`⚠️ Warning: Recording is short (${durationSec} seconds), but continuing...`);
-      // If you want to block short recordings, uncomment below:
-      // return sendErrorResponse(
-      //   res,
-      //   `Recording too short (${durationSec} seconds). Wait at least 3 seconds.`,
-      //   HttpStatus.BAD_REQUEST
-      // );
     }
 
     // 🔥 STEP 1: MARK AS INACTIVE FIRST
@@ -1038,51 +1025,40 @@ export const stopLiveSessionRecording = async (req, res) => {
       state.recording.audioTransports = [];
     }
 
-    // 🔥 STEP 4: STOP FFMPEG PROCESS
+    // 🔥 STEP 4: STOP FFMPEG PROCESS USING waitForFFmpegExit
     const ffmpeg = state.recording.ffmpegProcess;
-    let ffmpegStopped = false;
     
     if (ffmpeg && !ffmpeg.killed) {
       try {
         console.log("🛑 Sending SIGINT to FFmpeg...");
         ffmpeg.kill("SIGINT");
         
-        // Wait for FFmpeg to exit with timeout
-        await new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            console.warn("⚠️ FFmpeg not responding, forcing kill...");
+        // ✅ Use the imported waitForFFmpegExit function
+        try {
+          await waitForFFmpegExit(ffmpeg);
+          console.log("✅ FFmpeg finalized recording properly");
+        } catch (ffmpegError) {
+          console.warn("⚠️ FFmpeg exit warning:", ffmpegError.message);
+          
+          // Force kill if timeout or error
+          if (ffmpeg && !ffmpeg.killed) {
+            console.warn("🔄 Force killing FFmpeg...");
             ffmpeg.kill("SIGKILL");
-            resolve();
-          }, 5000); // 5 seconds timeout
-          
-          ffmpeg.once("close", () => {
-            clearTimeout(timeout);
-            console.log("✅ FFmpeg process closed");
-            resolve();
-          });
-          
-          ffmpeg.once("error", (err) => {
-            clearTimeout(timeout);
-            console.error("❌ FFmpeg process error:", err.message);
-            reject(err);
-          });
-        });
-        
-        ffmpegStopped = true;
-      } catch (ffmpegError) {
-        console.warn("⚠️ FFmpeg stop warning:", ffmpegError.message);
+          }
+        }
+      } catch (ffmpegStopError) {
+        console.warn("⚠️ FFmpeg stop error:", ffmpegStopError.message);
         if (ffmpeg && !ffmpeg.killed) {
           ffmpeg.kill("SIGKILL");
         }
       }
     } else if (ffmpeg) {
       console.log("✅ FFmpeg already stopped");
-      ffmpegStopped = true;
     } else {
       console.log("ℹ️ No FFmpeg process found");
     }
 
-    // 🔥 STEP 5: WAIT FOR S3 UPLOAD COMPLETION (if recordingPromise exists)
+    // 🔥 STEP 5: WAIT FOR S3 UPLOAD COMPLETION
     let uploadResult = null;
     if (state.recording.recordingPromise) {
       try {
@@ -1095,7 +1071,7 @@ export const stopLiveSessionRecording = async (req, res) => {
           )
         ]);
         console.log("✅ S3 upload completed successfully");
-        console.log("📁 File URL:", uploadResult.fileUrl);
+        console.log("📁 File URL:", uploadResult?.fileUrl);
       } catch (uploadError) {
         console.error("❌ S3 upload failed:", uploadError.message);
         
@@ -1217,7 +1193,6 @@ export const stopLiveSessionRecording = async (req, res) => {
     );
   }
 };
-
 
 /**
  * ✅ Get All Live Sessions of Current User Only
