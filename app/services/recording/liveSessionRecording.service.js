@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
-import fetch from "node-fetch"; // npm install node-fetch
+import fetch from "node-fetch";
 
 import { generateSDP, saveSDPFile } from "./sdpGenerator.js";
 import { startFFmpeg, waitForFFmpegExit } from "./ffmpegRunner.js";
@@ -166,179 +166,180 @@ const startFFmpegWithS3Upload = ({
  * Main recording function
  */
 export const startLiveRecording = async ({ state, router, sessionId }) => {
-  const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
-  if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
+  try {
+    console.log("🎬 === START LIVE RECORDING FUNCTION CALLED ===");
+    console.log("📊 Input parameters:", { 
+      sessionId, 
+      hasState: !!state, 
+      hasRouter: !!router,
+      stateRecordingExists: !!state?.recording
+    });
+    
+    const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
+    if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
 
-  // ✅ FIX: Initialize recording state BEFORE starting FFmpeg
-  if (!state.recording) {
-    state.recording = {
-      active: false,
-      videoTransport: null,
-      audioTransports: [],
-      videoConsumer: null,
-      audioConsumers: [],
-      recordingPromise: null,
-      startTime: null,
-      ffmpegProcess: null,
-      filePath: null
-    };
-  }
-
-  // ================= FIXED PORTS =================
-  const VIDEO_PORT = 5004;
-  const VIDEO_RTCP_PORT = 5005;
-  const AUDIO_BASE_PORT = 6000;
-
-  // ================= VIDEO =================
-  const videoTransport = await router.createPlainTransport({
-    listenIp: { ip: "127.0.0.1" },
-    rtcpMux: false,
-    comedia: false
-  });
-
-  await videoTransport.connect({
-    ip: "127.0.0.1",
-    port: VIDEO_PORT,
-    rtcpPort: VIDEO_RTCP_PORT
-  });
-
-  const videoProducer = await waitForVideoProducer(state);
-
-  // 🔴 GUARD: recording might be stopped meanwhile
-  if (state.recording && state.recording.active === false) {
-    videoTransport.close();
-    return;
-  }
-
-  const videoConsumer = await videoTransport.consume({
-    producerId: videoProducer.id,
-    rtpCapabilities: router.rtpCapabilities,
-    paused: false
-  });
-
-  await videoConsumer.resume();
-
-  // ================= AUDIO =================
-  const audioConsumers = [];
-  const audioTransports = [];
-
-  let audioIndex = 0;
-
-  for (const producer of state.producers.values()) {
-    if (producer.kind === "audio") {
-      const port = AUDIO_BASE_PORT + audioIndex * 2;
-
-      const audioTransport = await router.createPlainTransport({
-        listenIp: { ip: "127.0.0.1" },
-        rtcpMux: false,
-        comedia: false
-      });
-
-      await audioTransport.connect({
-        ip: "127.0.0.1",
-        port,
-        rtcpPort: port + 1
-      });
-
-      // 🔴 GUARD
-      if (state.recording && state.recording.active === false) {
-        audioTransport.close();
-        continue;
-      }
-
-      const consumer = await audioTransport.consume({
-        producerId: producer.id,
-        rtpCapabilities: router.rtpCapabilities,
-        paused: false
-      });
-
-      await consumer.resume();
-
-      audioConsumers.push({ consumer, port });
-      audioTransports.push(audioTransport);
-      audioIndex++;
+    // ✅ FIX: Initialize recording state BEFORE starting FFmpeg
+    if (!state.recording) {
+      console.log("📝 Initializing fresh recording state");
+      state.recording = {
+        active: false,
+        videoTransport: null,
+        audioTransports: [],
+        videoConsumer: null,
+        audioConsumers: [],
+        recordingPromise: null,
+        startTime: null,
+        ffmpegProcess: null,
+        filePath: null
+      };
     }
-  }
 
-  // ================= SDP =================
-  const base = path.join(TMP_DIR, `session-${sessionId}`);
-  const videoSdp = `${base}-video.sdp`;
-  const audioSdps = audioConsumers.map((_, i) => `${base}-audio-${i}.sdp`);
+    console.log("📊 Recording state after init:", state.recording);
 
-  saveSDPFile(videoSdp, generateSDP({
-    ip: "127.0.0.1",
-    port: VIDEO_PORT,
-    kind: "video",
-    rtpParameters: videoConsumer.rtpParameters
-  }));
+    // ================= FIXED PORTS =================
+    const VIDEO_PORT = 5004;
+    const VIDEO_RTCP_PORT = 5005;
+    const AUDIO_BASE_PORT = 6000;
 
-  audioConsumers.forEach((item, i) => {
-    saveSDPFile(audioSdps[i], generateSDP({
-      ip: "127.0.0.1",
-      port: item.port,
-      kind: "audio",
-      rtpParameters: item.consumer.rtpParameters
-    }));
-  });
-
-  // ================= START FFMPEG WITH S3 UPLOAD =================
-  const recordingPromise = startFFmpegWithS3Upload({
-    videoSdp,
-    audioSdps,
-    sessionId,
-    state
-  });
-
-  // ================= UPDATE RECORDING STATE =================
-  // ✅ CRITICAL FIX: Set ALL properties properly
-  state.recording.active = true;
-  state.recording.videoTransport = videoTransport;
-  state.recording.audioTransports = audioTransports;
-  state.recording.videoConsumer = videoConsumer;
-  state.recording.audioConsumers = audioConsumers.map(a => a.consumer);
-  state.recording.recordingPromise = recordingPromise;
-  // ✅ CRITICAL: Set startTime as Date object
-  state.recording.startTime = new Date();
-  
-  // ✅ Set filePath from startFFmpegWithS3Upload
-  // Note: filePath will be set inside startFFmpegWithS3Upload
-
-  console.log("✅ Recording started with pre-signed URL flow");
-  console.log("🎬 Start Time set to:", state.recording.startTime.toISOString());
-  console.log("📊 Recording state initialized successfully");
-
-  // Handle recording promise completion
-  recordingPromise
-    .then((uploadResult) => {
-      console.log("✅ Recording completed successfully");
-      
-      // Update state after successful recording
-      if (state.recording) {
-        state.recording.active = false;
-        state.recording.completed = true;
-        state.recording.uploadResult = uploadResult;
-        state.recording.endTime = new Date();
-        
-        // Calculate duration
-        if (state.recording.startTime && state.recording.endTime) {
-          const duration = Math.floor(
-            (state.recording.endTime.getTime() - state.recording.startTime.getTime()) / 1000
-          );
-          state.recording.duration = duration;
-          console.log(`⏱️ Recording duration: ${duration} seconds`);
-        }
-      }
-    })
-    .catch((error) => {
-      console.error("❌ Recording failed:", error);
-      
-      // Update state on error
-      if (state.recording) {
-        state.recording.active = false;
-        state.recording.error = error.message;
-        state.recording.endTime = new Date();
-      }
+    // ================= VIDEO =================
+    console.log("🎥 Setting up video transport...");
+    const videoTransport = await router.createPlainTransport({
+      listenIp: { ip: "127.0.0.1" },
+      rtcpMux: false,
+      comedia: false
     });
 
-  return state.recording;
+    await videoTransport.connect({
+      ip: "127.0.0.1",
+      port: VIDEO_PORT,
+      rtcpPort: VIDEO_RTCP_PORT
+    });
+
+    console.log("🎥 Waiting for video producer...");
+    const videoProducer = await waitForVideoProducer(state);
+    console.log("✅ Video producer found:", videoProducer.id);
+
+    // 🔴 GUARD: recording might be stopped meanwhile
+    if (state.recording && state.recording.active === false) {
+      console.log("⚠️ Recording already inactive, closing video transport");
+      videoTransport.close();
+      return state.recording;
+    }
+
+    const videoConsumer = await videoTransport.consume({
+      producerId: videoProducer.id,
+      rtpCapabilities: router.rtpCapabilities,
+      paused: false
+    });
+
+    await videoConsumer.resume();
+    console.log("✅ Video consumer created and resumed");
+
+    // ================= AUDIO =================
+    console.log("🎵 Setting up audio transports...");
+    const audioConsumers = [];
+    const audioTransports = [];
+
+    let audioIndex = 0;
+
+    for (const producer of state.producers.values()) {
+      if (producer.kind === "audio") {
+        const port = AUDIO_BASE_PORT + audioIndex * 2;
+
+        const audioTransport = await router.createPlainTransport({
+          listenIp: { ip: "127.0.0.1" },
+          rtcpMux: false,
+          comedia: false
+        });
+
+        await audioTransport.connect({
+          ip: "127.0.0.1",
+          port,
+          rtcpPort: port + 1
+        });
+
+        // 🔴 GUARD
+        if (state.recording && state.recording.active === false) {
+          audioTransport.close();
+          continue;
+        }
+
+        const consumer = await audioTransport.consume({
+          producerId: producer.id,
+          rtpCapabilities: router.rtpCapabilities,
+          paused: false
+        });
+
+        await consumer.resume();
+
+        audioConsumers.push({ consumer, port });
+        audioTransports.push(audioTransport);
+        audioIndex++;
+        console.log(`✅ Audio consumer ${audioIndex} created on port ${port}`);
+      }
+    }
+
+    console.log(`✅ Total audio consumers: ${audioConsumers.length}`);
+
+    // ================= SDP =================
+    console.log("📄 Creating SDP files...");
+    const base = path.join(TMP_DIR, `session-${sessionId}`);
+    const videoSdp = `${base}-video.sdp`;
+    const audioSdps = audioConsumers.map((_, i) => `${base}-audio-${i}.sdp`);
+
+    saveSDPFile(videoSdp, generateSDP({
+      ip: "127.0.0.1",
+      port: VIDEO_PORT,
+      kind: "video",
+      rtpParameters: videoConsumer.rtpParameters
+    }));
+
+    audioConsumers.forEach((item, i) => {
+      saveSDPFile(audioSdps[i], generateSDP({
+        ip: "127.0.0.1",
+        port: item.port,
+        kind: "audio",
+        rtpParameters: item.consumer.rtpParameters
+      }));
+    });
+
+    console.log("✅ SDP files created");
+
+    // ================= START FFMPEG WITH S3 UPLOAD =================
+    console.log("🚀 Starting FFmpeg with S3 upload...");
+    const recordingPromise = startFFmpegWithS3Upload({
+      videoSdp,
+      audioSdps,
+      sessionId,
+      state
+    });
+
+    // ================= UPDATE RECORDING STATE =================
+    console.log("📝 Updating recording state...");
+    state.recording.active = true;
+    state.recording.videoTransport = videoTransport;
+    state.recording.audioTransports = audioTransports;
+    state.recording.videoConsumer = videoConsumer;
+    state.recording.audioConsumers = audioConsumers.map(a => a.consumer);
+    state.recording.recordingPromise = recordingPromise;
+    state.recording.startTime = new Date();
+    
+    console.log("✅ Recording started at:", state.recording.startTime.toISOString());
+    console.log("🎉 startLiveRecording completed successfully");
+
+    // ✅ CRITICAL: Always return state.recording
+    return state.recording;
+
+  } catch (error) {
+    console.error("🔥 startLiveRecording error:", error.message);
+    console.error("Stack trace:", error.stack);
+    
+    // Even if there's an error, try to return the recording state
+    if (state && state.recording) {
+      console.log("⚠️ Returning recording state despite error");
+      return state.recording;
+    }
+    
+    throw error; // Re-throw the error so controller can handle it
+  }
 };
