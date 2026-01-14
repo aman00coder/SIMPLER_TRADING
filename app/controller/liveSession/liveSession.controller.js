@@ -285,30 +285,42 @@ export const stopLiveSessionRecording = async (req, res) => {
     const { sessionId } = req.params;
     const state = roomState.get(sessionId);
 
-    if (!state || !state.recording || !state.recording.ffmpegProcess) {
+    if (!state?.recording?.ffmpegProcess) {
       return res.status(400).json({
         success: false,
         message: "No active recording found"
       });
     }
 
-    console.log("🎬 FFmpeg process found, stopping...");
+    const ffmpeg = state.recording.ffmpegProcess;
 
-    // 🔴 1️⃣ Gracefully stop FFmpeg
-    state.recording.ffmpegProcess.kill("SIGINT");
+    console.log("🎬 Sending SIGINT to FFmpeg...");
+    ffmpeg.kill("SIGINT");
 
-    // 🔴 2️⃣ WAIT for FFmpeg to exit & upload to S3
-    await waitForFFmpegExit(state.recording.ffmpegProcess);
+    let exited = false;
 
-    console.log("✅ FFmpeg stopped & upload completed");
+    // ⏳ Wait max 3 seconds for graceful exit
+    await Promise.race([
+      new Promise((resolve) => {
+        ffmpeg.once("close", () => {
+          exited = true;
+          resolve();
+        });
+      }),
+      new Promise((resolve) => setTimeout(resolve, 3000))
+    ]);
 
-    // 🔴 3️⃣ OPTIONAL: save recording URL in DB (recommended)
-    // NOTE: upload result already logged inside startFFmpegWithS3Upload
+    // 🔥 FORCE KILL if still running
+    if (!exited) {
+      console.warn("⚠️ FFmpeg not exiting, FORCE KILL");
+      ffmpeg.kill("SIGKILL");
+    }
+
     state.recording.active = false;
 
     return res.status(200).json({
       success: true,
-      message: "Recording stopped and uploaded successfully",
+      message: "Recording stopped (upload in progress)",
       data: {
         sessionId,
         startedAt: state.recording.startTime
@@ -324,7 +336,6 @@ export const stopLiveSessionRecording = async (req, res) => {
     });
   }
 };
-
 
 
 /**
