@@ -2,32 +2,36 @@ import { spawn } from "child_process";
 
 export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   const args = [
-    "-y", // Overwrite output file
+    "-y",
 
-    // Logging
+    // ================= LOGGING =================
     "-loglevel", "warning",
     "-stats",
 
-    // Input optimizations
-    "-fflags", "+genpts",
+    // ================= RTP / LOW LATENCY FIXES =================
+    "-fflags", "nobuffer",
+    "-flags", "low_delay",
+    "-max_delay", "500000",          // 0.5 sec
+    "-rw_timeout", "5000000",        // 5 sec read/write timeout
     "-use_wallclock_as_timestamps", "1",
-    "-analyzeduration", "20000000",
-    "-probesize", "20000000",
 
-    // Video input
+    "-analyzeduration", "10000000",
+    "-probesize", "10000000",
+
+    // ================= VIDEO INPUT =================
     "-protocol_whitelist", "file,udp,rtp,pipe",
     "-i", videoSdp
   ];
 
-  // Audio inputs
-  audioSdps.forEach(sdp => {
+  // ================= AUDIO INPUTS =================
+  audioSdps.forEach((sdp) => {
     args.push(
       "-protocol_whitelist", "file,udp,rtp,pipe",
       "-i", sdp
     );
   });
 
-  // Complex filter for audio mixing
+  // ================= AUDIO MIXING =================
   if (audioSdps.length > 0) {
     args.push(
       "-filter_complex",
@@ -39,87 +43,72 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     args.push("-map", "0:v");
   }
 
-  // Output settings (optimized for S3 upload)
+  // ================= OUTPUT SETTINGS =================
   args.push(
-    // Video codec
+    // Video
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-pix_fmt", "yuv420p",
     "-profile:v", "main",
     "-r", "30",
-    "-g", "60", // Keyframe interval for streaming
-    "-crf", "23", // Quality balance
+    "-g", "60",
+    "-crf", "23",
 
-    // Audio codec
+    // Audio
     "-c:a", "aac",
     "-b:a", "128k",
     "-ar", "44100",
     "-ac", "2",
 
-    // MP4 optimizations
-    "-movflags", "+faststart+empty_moov", // Important for streaming
+    // MP4 flags
+    "-movflags", "+faststart+empty_moov",
     "-f", "mp4",
-    
-    // Output file
+
     output
   );
 
-  console.log("🎬 FFmpeg command:", "ffmpeg", args.join(" "));
+  console.log("🎬 FFmpeg command:\nffmpeg", args.join(" "));
 
   const ffmpeg = spawn("ffmpeg", args, {
-    stdio: ["ignore", "pipe", "pipe"] // Capture both stdout and stderr
+    stdio: ["ignore", "pipe", "pipe"]
   });
 
-  // Log FFmpeg output
-  ffmpeg.stdout.on('data', (data) => {
-    const output = data.toString().trim();
-    if (output) {
-      console.log('🎥 FFmpeg stdout:', output);
-    }
-  });
-
-  ffmpeg.stderr.on('data', (data) => {
+  // ================= LOGS =================
+  ffmpeg.stderr.on("data", (data) => {
     const line = data.toString().trim();
-    if (line && !line.includes("frame=")) { // Filter stats spam
-      console.log('🎥 FFmpeg:', line);
+    if (line && !line.includes("frame=")) {
+      console.log("🎥 FFmpeg:", line);
     }
   });
 
-  // Handle process errors
-  ffmpeg.on('error', (err) => {
-    console.error('❌ FFmpeg process error:', err.message);
+  ffmpeg.on("error", (err) => {
+    console.error("❌ FFmpeg process error:", err.message);
   });
 
   return ffmpeg;
 };
 
-// 🔥 MUST EXPORT THIS
-export const waitForFFmpegExit = (ffmpegProcess) => {
+// =================================================
+// WAIT FOR EXIT (GRACEFUL)
+// =================================================
+export const waitForFFmpegExit = (ffmpegProcess, timeoutMs = 10000) => {
   return new Promise((resolve, reject) => {
     let settled = false;
 
     const timeout = setTimeout(() => {
       if (settled) return;
       settled = true;
-      console.warn("⚠️ FFmpeg exit timeout - forcing kill");
+      console.warn("⚠️ FFmpeg exit timeout, force killing...");
       ffmpegProcess.kill("SIGKILL");
-      reject(new Error("FFmpeg exit timeout (10 seconds)"));
-    }, 10000); // 10 seconds timeout
+      resolve(); // ✅ IMPORTANT: do NOT reject (file still usable)
+    }, timeoutMs);
 
     ffmpegProcess.once("close", (code, signal) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-
       console.log(`🎬 FFmpeg closed - Code: ${code}, Signal: ${signal}`);
-      
-      if (code === 0 || signal === "SIGINT") {
-        resolve();
-      } else {
-        reject(
-          new Error(`FFmpeg exited abnormally: code=${code}, signal=${signal}`)
-        );
-      }
+      resolve();
     });
 
     ffmpegProcess.once("error", (err) => {
@@ -131,22 +120,23 @@ export const waitForFFmpegExit = (ffmpegProcess) => {
   });
 };
 
-// Additional helper function for better error handling
+// =================================================
+// SAFE KILL (USED BY CONTROLLER)
+// =================================================
 export const killFFmpegProcess = (ffmpegProcess) => {
   if (!ffmpegProcess || ffmpegProcess.killed) return true;
-  
+
   try {
-    // First try graceful shutdown
+    console.log("🛑 Sending SIGINT to FFmpeg...");
     ffmpegProcess.kill("SIGINT");
-    
-    // Force kill after 3 seconds if still alive
+
     setTimeout(() => {
       if (!ffmpegProcess.killed) {
-        console.warn("🔄 Force killing FFmpeg...");
+        console.warn("🔄 Force killing FFmpeg (SIGKILL)...");
         ffmpegProcess.kill("SIGKILL");
       }
     }, 3000);
-    
+
     return true;
   } catch (err) {
     console.error("❌ Error killing FFmpeg process:", err.message);
