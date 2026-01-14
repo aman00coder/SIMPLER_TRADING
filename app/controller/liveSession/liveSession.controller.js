@@ -924,18 +924,18 @@ export const stopLiveSessionRecording = async (req, res) => {
     sessionId = req.params.sessionId;
     const userId = req.tokenData?.userId;
 
-    if (!sessionId) {
-      return sendErrorResponse(res, "SessionId required", 400);
-    }
+    // if (!sessionId) {
+    //   return sendErrorResponse(res, "SessionId required", 400);
+    // }
 
-    const state = roomState.get(sessionId);
-    if (!state?.recording?.active) {
-      return sendErrorResponse(res, "Recording not running", 400);
-    }
+    // const state = roomState.get(sessionId);
+    // if (!state?.recording?.active) {
+    //   return sendErrorResponse(res, "Recording not running", 400);
+    // }
 
-    if (state.createdBy?.toString() !== userId) {
-      return sendErrorResponse(res, "Unauthorized", 401);
-    }
+    // if (state.createdBy?.toString() !== userId) {
+    //   return sendErrorResponse(res, "Unauthorized", 401);
+    // }
 
     const startTime = state.recording.startTime || new Date();
     const durationSec = Math.floor((Date.now() - startTime.getTime()) / 1000);
