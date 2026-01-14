@@ -159,11 +159,6 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
   const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
   if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
 
-  // ================= FIXED PORTS =================
-  const VIDEO_PORT = 5004;
-  const VIDEO_RTCP_PORT = 5005;
-  const AUDIO_BASE_PORT = 6000;
-
   // ✅ FIX: Initialize recording state BEFORE starting FFmpeg
   if (!state.recording) {
     state.recording = {
@@ -178,6 +173,11 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
       filePath: null
     };
   }
+
+  // ================= FIXED PORTS =================
+  const VIDEO_PORT = 5004;
+  const VIDEO_RTCP_PORT = 5005;
+  const AUDIO_BASE_PORT = 6000;
 
   // ================= VIDEO =================
   const videoTransport = await router.createPlainTransport({
@@ -285,8 +285,54 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
   state.recording.audioTransports = audioTransports;
   state.recording.videoConsumer = videoConsumer;
   state.recording.audioConsumers = audioConsumers.map(a => a.consumer);
-  state.recording.recordingPromise = recordingPromise; // Save the promise
+  state.recording.recordingPromise = recordingPromise;
+  // ✅ FIX: Set startTime properly
   state.recording.startTime = new Date();
+  state.recording.filePath = path.join(TMP_DIR, `temp_${sessionId}_${Date.now()}.mp4`);
 
   console.log("✅ Recording started with pre-signed URL flow");
+  console.log("🎬 Recording started at:", state.recording.startTime.toISOString());
+  console.log("📁 Temporary file path:", state.recording.filePath);
+  console.log("📊 Recording state initialized:", {
+    active: state.recording.active,
+    hasVideoTransport: !!state.recording.videoTransport,
+    hasAudioTransports: state.recording.audioTransports.length,
+    hasRecordingPromise: !!state.recording.recordingPromise,
+    startTimeSet: !!state.recording.startTime
+  });
+
+  // Handle recording promise completion
+  recordingPromise
+    .then((uploadResult) => {
+      console.log("✅ Recording completed successfully:", uploadResult);
+      
+      // Update state after successful recording
+      if (state.recording) {
+        state.recording.active = false;
+        state.recording.completed = true;
+        state.recording.uploadResult = uploadResult;
+        state.recording.endTime = new Date();
+        
+        // Calculate duration
+        if (state.recording.startTime && state.recording.endTime) {
+          const duration = Math.floor(
+            (state.recording.endTime.getTime() - state.recording.startTime.getTime()) / 1000
+          );
+          state.recording.duration = duration;
+          console.log(`⏱️ Recording duration: ${duration} seconds`);
+        }
+      }
+    })
+    .catch((error) => {
+      console.error("❌ Recording failed:", error);
+      
+      // Update state on error
+      if (state.recording) {
+        state.recording.active = false;
+        state.recording.error = error.message;
+        state.recording.endTime = new Date();
+      }
+    });
+
+  return state.recording;
 };
