@@ -99,13 +99,23 @@ const startFFmpegWithS3Upload = ({
       output: localOutput
     });
 
+    // ✅ FIX: Ensure state.recording exists before setting properties
+    if (!state.recording) {
+      state.recording = {};
+    }
+    
     // Save FFmpeg process reference in state
     state.recording.ffmpegProcess = ffmpegProcess;
-    state.recording.filePath = localOutput;
+    state.recording.filePath = localOutput; // ✅ Set filePath here
+
+    console.log("📁 File path saved:", localOutput);
 
     // Monitor FFmpeg stderr for logs
     ffmpegProcess.stderr.on('data', (data) => {
-      console.log('🎥 FFmpeg:', data.toString().trim());
+      const line = data.toString().trim();
+      if (line && !line.includes("frame=")) {
+        console.log('🎥 FFmpeg:', line);
+      }
     });
 
     // Handle FFmpeg completion
@@ -280,31 +290,27 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
   });
 
   // ================= UPDATE RECORDING STATE =================
+  // ✅ CRITICAL FIX: Set ALL properties properly
   state.recording.active = true;
   state.recording.videoTransport = videoTransport;
   state.recording.audioTransports = audioTransports;
   state.recording.videoConsumer = videoConsumer;
   state.recording.audioConsumers = audioConsumers.map(a => a.consumer);
   state.recording.recordingPromise = recordingPromise;
-  // ✅ FIX: Set startTime properly
+  // ✅ CRITICAL: Set startTime as Date object
   state.recording.startTime = new Date();
-  state.recording.filePath = path.join(TMP_DIR, `temp_${sessionId}_${Date.now()}.mp4`);
+  
+  // ✅ Set filePath from startFFmpegWithS3Upload
+  // Note: filePath will be set inside startFFmpegWithS3Upload
 
   console.log("✅ Recording started with pre-signed URL flow");
-  console.log("🎬 Recording started at:", state.recording.startTime.toISOString());
-  console.log("📁 Temporary file path:", state.recording.filePath);
-  console.log("📊 Recording state initialized:", {
-    active: state.recording.active,
-    hasVideoTransport: !!state.recording.videoTransport,
-    hasAudioTransports: state.recording.audioTransports.length,
-    hasRecordingPromise: !!state.recording.recordingPromise,
-    startTimeSet: !!state.recording.startTime
-  });
+  console.log("🎬 Start Time set to:", state.recording.startTime.toISOString());
+  console.log("📊 Recording state initialized successfully");
 
   // Handle recording promise completion
   recordingPromise
     .then((uploadResult) => {
-      console.log("✅ Recording completed successfully:", uploadResult);
+      console.log("✅ Recording completed successfully");
       
       // Update state after successful recording
       if (state.recording) {
