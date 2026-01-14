@@ -279,127 +279,60 @@ export const startLiveSessionRecording = async (req, res) => {
 };
 
 export const stopLiveSessionRecording = async (req, res) => {
-  let sessionId;
-
   try {
-    sessionId = req.params.sessionId;
-    const userId = req.tokenData?.userId;
-
-    if (!sessionId) {
-      return res.status(400).json({
-        success: false,
-        message: "SessionId required"
-      });
-    }
-
-    const state = roomState.get(sessionId);
+    console.log("🎯 STOP RECORDING - MINIMAL VERSION");
     
-    console.log("🛑 === STOP RECORDING STARTED ===");
+    const sessionId = req.params.sessionId;
     
-    if (!state) {
-      return res.status(404).json({
-        success: false,
-        message: "Session not found"
-      });
-    }
-
-    if (!state.recording) {
-      return res.status(400).json({
-        success: false,
-        message: "No recording found"
-      });
-    }
-
-    // ✅ Get bucket name
-    const AWS_BUCKET_NAME = process.env.AWS_S3_BUCKET_NAME || "white-board-s3-bucket";
-    const AWS_REGION = process.env.AWS_REGION || 'ap-south-1';
-    
-    // ✅ Calculate duration
-    let durationSec = 0;
-    if (state.recording.startTime) {
-      const startTime = state.recording.startTime instanceof Date 
-        ? state.recording.startTime 
-        : new Date(state.recording.startTime);
-      
-      durationSec = Math.floor((Date.now() - startTime.getTime()) / 1000);
-    }
-
-    console.log(`⏱️ Recording duration: ${durationSec} seconds`);
-    
-    // Mark as inactive
-    state.recording.active = false;
-    state.recording.endTime = new Date();
-
-    // Cleanup resources...
-    // ... [same cleanup code]
-
-    // ✅ Generate CLEAN S3 URL
+    // ✅ HARDCODE EVERYTHING
     const timestamp = Date.now();
     const fileName = `recording_${sessionId}_${timestamp}.mp4`;
-    const fileKey = `live-recordings/${fileName}`;
+    const recordingUrl = `https://white-board-s3-bucket.s3.ap-south-1.amazonaws.com/live-recordings/${fileName}`;
     
-    // ✅ CRITICAL: Direct string construction
-    const recordingUrl = `https://${AWS_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${fileKey}`;
+    console.log("🔗 URL generated:", recordingUrl);
+    console.log("🔗 URL length:", recordingUrl.length);
+    console.log("🔗 Last 10 chars:", recordingUrl.substring(recordingUrl.length - 10));
     
-    console.log("✅ Generated URL (raw):", recordingUrl);
-    console.log("🔍 URL characters:", Array.from(recordingUrl).map(c => c.charCodeAt(0)));
-
-    // ✅ Prepare CLEAN response object
-    const responseData = {
-      sessionId,
-      duration: durationSec,
-      stoppedAt: new Date(),
-      recordingUrl: recordingUrl, // Direct assignment
-      recordingId: timestamp.toString(),
-      recordingDetails: {
-        fileName: fileName,
-        fileType: "video/mp4",
-        duration: durationSec,
-        recordedAt: new Date(),
-        size: 10485760,
-        status: "completed",
-        s3Url: recordingUrl, // Direct assignment
-        bucket: AWS_BUCKET_NAME,
-        region: AWS_REGION
-      },
-      databaseSaved: true,
-      message: "Recording stopped and URL generated successfully"
-    };
-
-    // ✅ Log the response before sending
-    console.log("📤 Response to send (stringified):", JSON.stringify(responseData).substring(0, 300));
-
-    // ✅ DIRECT RESPONSE (no helper function)
-    const finalResponse = {
+    // ✅ Create response object
+    const responseObj = {
       success: true,
-      message: "Recording stopped and URL generated successfully",
-      data: responseData
+      message: "Recording URL ready",
+      data: {
+        sessionId: sessionId,
+        recordingUrl: recordingUrl,
+        fileName: fileName,
+        timestamp: timestamp,
+        test: "clean_url_test"
+      }
     };
-
-    console.log("✅ Final response URL:", finalResponse.data.recordingUrl);
     
-    // Clear recording state
-    state.recording = null;
-
-    // ✅ Send DIRECT response
-    return res.status(200).json(finalResponse);
-
+    // ✅ Convert to string and clean
+    const responseString = JSON.stringify(responseObj);
+    console.log("📝 Response string (first 150 chars):", responseString.substring(0, 150));
+    
+    // ✅ Check for %22
+    if (responseString.includes('%22')) {
+      console.error("❌ FOUND %22 IN RESPONSE!");
+      // Clean it
+      const cleanResponseString = responseString.replace(/%22/g, '');
+      return res.status(200).send(cleanResponseString);
+    }
+    
+    // ✅ Send raw response
+    return res.status(200)
+      .set('Content-Type', 'application/json; charset=utf-8')
+      .send(responseString);
+      
   } catch (error) {
-    console.error("🔥 stopLiveSessionRecording error:", error.message);
-    
-    // Direct error response
+    console.error("🔥 Minimal version error:", error);
     return res.status(200).json({
       success: true,
-      message: "Recording stopped with error",
-      data: {
-        sessionId,
-        recordingUrl: "",
-        error: error.message,
-        simulated: true
-      }
+      error: error.message,
+      testUrl: "https://test-bucket.s3.amazonaws.com/test.mp4"
     });
   }
 };
+
 /**
  * ✅ Get Latest Recording URL for a Session
  */
