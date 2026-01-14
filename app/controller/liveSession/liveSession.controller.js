@@ -294,53 +294,26 @@ export const stopLiveSessionRecording = async (req, res) => {
 
     const recording = state.recording;
 
-    // ================= 1️⃣ STOP FFMPEG =================
-    console.log("🎬 Sending SIGINT to FFmpeg...");
+    // 1️⃣ Stop FFmpeg
     try {
+      console.log("🎬 Sending SIGINT to FFmpeg...");
       recording.ffmpegProcess.kill("SIGINT");
-    } catch (e) {
-      console.warn("⚠️ FFmpeg already stopped");
-    }
-
-    // ================= 2️⃣ CLOSE MEDIASOUP CONSUMERS =================
-    console.log("🔌 Closing media consumers...");
-
-    try {
-      recording.videoConsumer?.close();
     } catch {}
 
-    if (Array.isArray(recording.audioConsumers)) {
-      recording.audioConsumers.forEach(c => {
-        try { c.close(); } catch {}
-      });
-    }
+    // 2️⃣ Close mediasoup resources
+    try { recording.videoConsumer?.close(); } catch {}
+    recording.audioConsumers?.forEach(c => { try { c.close(); } catch {} });
+    try { recording.videoTransport?.close(); } catch {}
+    recording.audioTransports?.forEach(t => { try { t.close(); } catch {} });
 
-    // ================= 3️⃣ CLOSE MEDIASOUP TRANSPORTS =================
-    console.log("🔌 Closing transports...");
-
-    try {
-      recording.videoTransport?.close();
-    } catch {}
-
-    if (Array.isArray(recording.audioTransports)) {
-      recording.audioTransports.forEach(t => {
-        try { t.close(); } catch {}
-      });
-    }
-
-    // ================= 4️⃣ WAIT FOR UPLOAD =================
+    // 3️⃣ Wait for upload result
     let uploadResult = null;
-
-    try {
-      if (recording.recordingPromise) {
-        console.log("⏳ Waiting for FFmpeg flush + S3 upload...");
-        uploadResult = await recording.recordingPromise;
-      }
-    } catch (err) {
-      console.error("❌ Upload wait failed:", err.message);
+    if (recording.recordingPromise) {
+      console.log("⏳ Waiting for FFmpeg flush + S3 upload...");
+      uploadResult = await recording.recordingPromise;
     }
 
-    // ================= 5️⃣ CLEAN STATE =================
+    // 4️⃣ Reset state
     state.recording = {
       active: false,
       videoTransport: null,
@@ -348,20 +321,21 @@ export const stopLiveSessionRecording = async (req, res) => {
       videoConsumer: null,
       audioConsumers: [],
       recordingPromise: null,
-      startTime: recording.startTime || null,
+      startTime: recording.startTime,
       ffmpegProcess: null,
       filePath: null
     };
 
-    console.log("✅ Recording fully stopped");
-
     return res.status(200).json({
       success: true,
-      message: "Recording stopped and saved successfully",
+      message: uploadResult?.success
+        ? "Recording stopped and saved successfully"
+        : "Recording stopped but upload failed",
       data: {
         sessionId,
         recordingUrl: uploadResult?.fileUrl || null,
         fileName: uploadResult?.fileName || null,
+        reason: uploadResult?.reason || null,
         startedAt: recording.startTime
       }
     });
@@ -374,6 +348,7 @@ export const stopLiveSessionRecording = async (req, res) => {
     });
   }
 };
+
 
 
 
