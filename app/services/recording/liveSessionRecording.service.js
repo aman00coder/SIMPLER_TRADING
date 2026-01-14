@@ -1,8 +1,11 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
+import fetch from "node-fetch"; // npm install node-fetch
+
 import { generateSDP, saveSDPFile } from "./sdpGenerator.js";
-import { startFFmpeg } from "./ffmpegRunner.js";
+import { startFFmpeg, waitForFFmpegExit } from "./ffmpegRunner.js";
+import { generatePresignedUrl } from "../../middleware/aws.s3.js";
 
 /**
  * Wait until video producer is available
@@ -17,121 +20,142 @@ const waitForVideoProducer = async (state, timeout = 10000) => {
   throw new Error("Video producer not found");
 };
 
-// export const startLiveRecording = async ({ state, router, sessionId }) => {
+/**
+ * Upload file to S3 using pre-signed URL
+ */
+const uploadToS3ViaPresignedUrl = async (filePath, sessionId) => {
+  try {
+    console.log("📤 Starting S3 upload via pre-signed URL...");
+    
+    const stats = fs.statSync(filePath);
+    if (stats.size < 100 * 1024) {
+      throw new Error("Recording file too small (no frames received)");
+    }
 
-//   const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
-//   if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
+    const fileName = `recording_${sessionId}_${Date.now()}.mp4`;
+    
+    // Get pre-signed URL for upload
+    const presignedData = await generatePresignedUrl({
+      fileName: fileName,
+      fileType: "video/mp4",
+      folder: "live-recordings",
+      expiresIn: 3600 // 1 hour for safety
+    });
 
-//   // ================= FIXED PORTS =================
-//   const VIDEO_PORT = 5004;
-//   const VIDEO_RTCP_PORT = 5005;
-//   const AUDIO_BASE_PORT = 6000;
+    console.log("🔗 Got pre-signed URL:", presignedData.uploadUrl.substring(0, 100) + "...");
 
-//   // ================= VIDEO =================
-//   const videoTransport = await router.createPlainTransport({
-//     listenIp: { ip: "127.0.0.1" },
-//     rtcpMux: false,
-//     comedia: false
-//   });
+    // Read file as buffer
+    const fileBuffer = fs.readFileSync(filePath);
+    
+    // Upload using pre-signed URL
+    const response = await fetch(presignedData.uploadUrl, {
+      method: 'PUT',
+      body: fileBuffer,
+      headers: {
+        'Content-Type': 'video/mp4',
+        'Content-Length': stats.size.toString()
+      }
+    });
 
-//   // 🔥 THIS IS THE MISSING PIECE
-//   await videoTransport.connect({
-//     ip: "127.0.0.1",
-//     port: VIDEO_PORT,
-//     rtcpPort: VIDEO_RTCP_PORT
-//   });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`S3 upload failed: ${response.status} - ${errorText}`);
+    }
 
-//   const videoProducer = await waitForVideoProducer(state);
+    console.log("✅ File uploaded to S3:", presignedData.fileUrl);
 
-//   const videoConsumer = await videoTransport.consume({
-//     producerId: videoProducer.id,
-//     rtpCapabilities: router.rtpCapabilities,
-//     paused: false
-//   });
+    return {
+      fileUrl: presignedData.fileUrl,
+      fileName: fileName,
+      fileKey: presignedData.fileKey
+    };
+  } catch (error) {
+    console.error("❌ Pre-signed URL upload error:", error);
+    throw error;
+  }
+};
 
-//   await videoConsumer.resume();
+/**
+ * Start FFmpeg and handle S3 upload when finished
+ */
+const startFFmpegWithS3Upload = ({ 
+  videoSdp, 
+  audioSdps, 
+  sessionId,
+  state
+}) => {
+  return new Promise((resolve, reject) => {
+    const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
+    if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
+    
+    const localOutput = path.join(TMP_DIR, `temp_${sessionId}_${Date.now()}.mp4`);
+    
+    console.log("🎬 Starting FFmpeg recording to:", localOutput);
+    
+    // Start FFmpeg
+    const ffmpegProcess = startFFmpeg({
+      videoSdp,
+      audioSdps,
+      output: localOutput
+    });
 
-//   // ================= AUDIO =================
-//   const audioConsumers = [];
-//   const audioTransports = [];
+    // Save FFmpeg process reference in state
+    state.recording.ffmpegProcess = ffmpegProcess;
+    state.recording.filePath = localOutput;
 
-//   let audioIndex = 0;
+    // Monitor FFmpeg stderr for logs
+    ffmpegProcess.stderr.on('data', (data) => {
+      console.log('🎥 FFmpeg:', data.toString().trim());
+    });
 
-//   for (const producer of state.producers.values()) {
-//     if (producer.kind === "audio") {
-//       const port = AUDIO_BASE_PORT + audioIndex * 2;
+    // Handle FFmpeg completion
+    ffmpegProcess.once("close", async (code, signal) => {
+      console.log(`🔴 FFmpeg closed - Code: ${code}, Signal: ${signal}`);
+      
+      if (code === 0 || signal === "SIGINT") {
+        try {
+          // Upload to S3 using pre-signed URL
+          console.log("📤 Uploading recording to S3...");
+          const uploadResult = await uploadToS3ViaPresignedUrl(localOutput, sessionId);
+          
+          // Cleanup local files
+          if (fs.existsSync(localOutput)) {
+            fs.unlinkSync(localOutput);
+            console.log("🧹 Cleaned local file:", localOutput);
+          }
+          
+          // Cleanup SDP files
+          [videoSdp, ...audioSdps].forEach(sdp => {
+            if (fs.existsSync(sdp)) {
+              fs.unlinkSync(sdp);
+              console.log("🧹 Cleaned SDP:", sdp);
+            }
+          });
 
-//       const audioTransport = await router.createPlainTransport({
-//         listenIp: { ip: "127.0.0.1" },
-//         rtcpMux: false,
-//         comedia: false
-//       });
+          console.log("✅ Recording completed and uploaded");
+          resolve(uploadResult);
+        } catch (uploadError) {
+          console.error("❌ Upload failed:", uploadError);
+          reject(uploadError);
+        }
+      } else {
+        const error = new Error(`FFmpeg exited abnormally: code=${code}, signal=${signal}`);
+        console.error("❌ FFmpeg error:", error.message);
+        reject(error);
+      }
+    });
 
-//       await audioTransport.connect({
-//         ip: "127.0.0.1",
-//         port,
-//         rtcpPort: port + 1
-//       });
+    ffmpegProcess.once("error", (err) => {
+      console.error("❌ FFmpeg process error:", err);
+      reject(err);
+    });
+  });
+};
 
-//       const consumer = await audioTransport.consume({
-//         producerId: producer.id,
-//         rtpCapabilities: router.rtpCapabilities,
-//         paused: false
-//       });
-
-//       await consumer.resume();
-
-//       audioConsumers.push({ consumer, port });
-//       audioTransports.push(audioTransport);
-//       audioIndex++;
-//     }
-//   }
-
-//   // ================= SDP =================
-//   const base = path.join(TMP_DIR, `session-${sessionId}`);
-//   const videoSdp = `${base}-video.sdp`;
-//   const audioSdps = audioConsumers.map((_, i) => `${base}-audio-${i}.sdp`);
-
-//   saveSDPFile(videoSdp, generateSDP({
-//     ip: "127.0.0.1",
-//     port: VIDEO_PORT,
-//     kind: "video",
-//     rtpParameters: videoConsumer.rtpParameters
-//   }));
-
-//   audioConsumers.forEach((item, i) => {
-//     saveSDPFile(audioSdps[i], generateSDP({
-//       ip: "127.0.0.1",
-//       port: item.port,
-//       kind: "audio",
-//       rtpParameters: item.consumer.rtpParameters
-//     }));
-//   });
-
-//   // ================= START FFMPEG =================
-//   const outputFile = `${base}.mp4`;
-
-//   const ffmpegProcess = startFFmpeg({
-//     videoSdp,
-//     audioSdps,
-//     output: outputFile
-//   });
-
-//   state.recording = {
-//     videoTransport,
-//     audioTransports,
-//     videoConsumer,
-//     audioConsumers: audioConsumers.map(a => a.consumer),
-//     ffmpegProcess,
-//     filePath: outputFile,
-//     startTime: new Date()
-//   };
-// };
-
-
-
+/**
+ * Main recording function
+ */
 export const startLiveRecording = async ({ state, router, sessionId }) => {
-
   const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
   if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
 
@@ -232,24 +256,24 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     }));
   });
 
-  // ================= START FFMPEG =================
-  const outputFile = `${base}.mp4`;
-
-  const ffmpegProcess = startFFmpeg({
+  // ================= START FFMPEG WITH S3 UPLOAD =================
+  const recordingPromise = startFFmpegWithS3Upload({
     videoSdp,
     audioSdps,
-    output: outputFile
+    sessionId,
+    state
   });
 
   // ================= SAVE RECORDING STATE =================
   state.recording = {
-    active: true,                    // 🔥 VERY IMPORTANT
+    active: true,
     videoTransport,
     audioTransports,
     videoConsumer,
     audioConsumers: audioConsumers.map(a => a.consumer),
-    ffmpegProcess,
-    filePath: outputFile,
+    recordingPromise, // Save the promise
     startTime: new Date()
   };
+
+  console.log("✅ Recording started with pre-signed URL flow");
 };

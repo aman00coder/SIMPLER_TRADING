@@ -197,3 +197,50 @@ export const checkFileExistsInS3 = async (fileKey) => {
     throw err;
   }
 };
+
+/**
+ * ============================================================
+ * ✅ PRE-SIGNED URL FOR FFMPEG RECORDINGS
+ * ============================================================
+ */
+export const generateRecordingPresignedUrl = async ({
+  sessionId,
+  fileName,
+  fileType = "video/mp4",
+  folder = "live-recordings",
+  expiresIn = 3600 // 1 hour for recordings
+}) => {
+  try {
+    if (!sessionId || !fileName) {
+      throw new Error("sessionId and fileName are required");
+    }
+
+    const safeName = sanitizeFileName(fileName);
+    const fileKey = `${folder}/${sessionId}/${Date.now()}_${safeName}`;
+
+    const params = {
+      Bucket: BUCKET_NAME,
+      Key: fileKey,
+      Expires: expiresIn,
+      ContentType: fileType,
+      // Optional: Add metadata
+      Metadata: {
+        sessionId: sessionId,
+        uploadedAt: new Date().toISOString(),
+        source: "live-recording"
+      }
+    };
+
+    const uploadUrl = await s3.getSignedUrlPromise("putObject", params);
+
+    return {
+      uploadUrl,
+      fileUrl: `https://${BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${fileKey}`,
+      fileKey,
+      expiresIn
+    };
+  } catch (error) {
+    console.error("❌ Recording Presigned URL Error:", error.message);
+    throw error;
+  }
+};

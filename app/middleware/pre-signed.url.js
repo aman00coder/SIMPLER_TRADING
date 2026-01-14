@@ -1,4 +1,4 @@
-// middleware/preSignedUrl.js
+// app/middleware/pre-signed.url.js
 
 import { v4 as uuidv4 } from "uuid";
 import dotenv from "dotenv";

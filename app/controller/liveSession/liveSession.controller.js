@@ -929,7 +929,7 @@ export const stopLiveSessionRecording = async (req, res) => {
     }
 
     const state = roomState.get(sessionId);
-    if (!state?.recording?.ffmpegProcess) {
+    if (!state?.recording?.active) {
       return sendErrorResponse(res, "Recording not running", 400);
     }
 
@@ -973,48 +973,62 @@ export const stopLiveSessionRecording = async (req, res) => {
       state.recording.audioTransports = [];
     }
 
+    // 🔥 STEP 4: STOP FFMPEG PROCESS
     const ffmpeg = state.recording.ffmpegProcess;
-
-    console.log("🛑 Sending SIGINT to FFmpeg...");
-    ffmpeg.kill("SIGINT");
-
-    // 🔥 STEP 4: FORCE EXIT SAFETY (in case SIGINT ignored)
-    const forceKillTimer = setTimeout(() => {
-      if (ffmpeg && !ffmpeg.killed) {
-        console.warn("⚠️ FFmpeg not exiting, force killing...");
-        ffmpeg.kill("SIGKILL");
+    if (ffmpeg && !ffmpeg.killed) {
+      console.log("🛑 Sending SIGINT to FFmpeg...");
+      ffmpeg.kill("SIGINT");
+      
+      // Wait for FFmpeg to exit
+      try {
+        await waitForFFmpegExit(ffmpeg);
+        console.log("✅ FFmpeg finalized recording");
+      } catch (ffmpegError) {
+        console.warn("⚠️ FFmpeg exit warning:", ffmpegError.message);
       }
-    }, 5000);
-
-    // 🔥 STEP 5: WAIT until MP4 is finalized
-    await waitForFFmpegExit(ffmpeg);
-    clearTimeout(forceKillTimer);
-
-    console.log("✅ FFmpeg finalized recording");
-
-    const filePath = state.recording.filePath;
-
-    if (!fs.existsSync(filePath)) {
-      throw new Error("Recording file not created");
     }
 
-    const stats = fs.statSync(filePath);
-    if (stats.size < 100 * 1024) {
-      throw new Error("Recording file too small (no frames received)");
+    // 🔥 STEP 5: WAIT FOR S3 UPLOAD COMPLETION
+    let uploadResult;
+    if (state.recording.recordingPromise) {
+      try {
+        console.log("⏳ Waiting for S3 upload to complete...");
+        uploadResult = await state.recording.recordingPromise;
+        console.log("✅ S3 upload completed:", uploadResult.fileUrl);
+      } catch (uploadError) {
+        console.error("❌ S3 upload failed:", uploadError.message);
+        
+        // Try to get local file if S3 upload failed
+        if (state.recording.filePath && fs.existsSync(state.recording.filePath)) {
+          console.log("🔄 Trying backup local upload...");
+          const uploadResultBackup = await uploadSessionRecording(state.recording.filePath, sessionId);
+          uploadResult = {
+            fileUrl: uploadResultBackup.fileUrl,
+            fileName: `${sessionId}_${Date.now()}.mp4`,
+            fileKey: uploadResultBackup.fileKey
+          };
+          
+          // Clean local file
+          fs.unlinkSync(state.recording.filePath);
+        } else {
+          throw uploadError;
+        }
+      }
+    } else {
+      throw new Error("No recording promise found");
     }
 
-    // ☁️ Upload
-    const uploadResult = await uploadSessionRecording(filePath, sessionId);
-
+    // Prepare recording data
     const uploadedRecording = {
       fileUrl: uploadResult.fileUrl,
-      fileName: `${sessionId}_${Date.now()}.mp4`,
+      fileName: uploadResult.fileName || `${sessionId}_${Date.now()}.mp4`,
       fileType: "video/mp4",
       recordedAt: new Date(),
       duration: durationSec,
       recordedBy: userId
     };
 
+    // Save to database
     await liveSessionModel.findOneAndUpdate(
       { sessionId },
       { $push: { recordingUrl: uploadedRecording } }
@@ -1024,17 +1038,24 @@ export const stopLiveSessionRecording = async (req, res) => {
     state.recording.ffmpegProcess = null;
     state.recording.filePath = null;
     state.recording.startTime = null;
+    state.recording.recordingPromise = null;
     state.recording = null;
 
     return sendSuccessResponse(
       res,
       uploadedRecording,
-      "Recording stopped & uploaded successfully",
+      "Recording stopped & uploaded to S3 successfully",
       200
     );
 
   } catch (error) {
     console.error("🔥 stopLiveSessionRecording error:", error.message);
+
+    // Cleanup if any error
+    const state = roomState.get(sessionId);
+    if (state?.recording) {
+      state.recording = null;
+    }
 
     return sendErrorResponse(
       res,
