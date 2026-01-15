@@ -47,7 +47,7 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   // ================= OUTPUT SETTINGS =================
   args.push(
     // Video
-    "-c:v", "copy",
+    "-c:v", "libx264",
     "-preset", "veryfast",
     "-pix_fmt", "yuv420p",
     "-profile:v", "main",
