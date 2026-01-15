@@ -73,95 +73,9 @@ const uploadToS3ViaPresignedUrl = async (filePath, sessionId) => {
   };
 };
 
-// =====================================================
-// START FFMPEG + HANDLE UPLOAD
-// =====================================================
-const startFFmpegWithS3Upload = ({
-  videoSdp,
-  audioSdps,
-  sessionId,
-  state
-}) => {
-  return new Promise((resolve) => {
-    const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
-    if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
-
-    const localOutput = path.join(
-      TMP_DIR,
-      `recording_${sessionId}_${Date.now()}.mp4`
-    );
-
-    console.log("🎬 FFmpeg output:", localOutput);
-
-    const ffmpeg = startFFmpeg({
-      videoSdp,
-      audioSdps,
-      output: localOutput
-    });
-
-    state.recording.ffmpegProcess = ffmpeg;
-    state.recording.filePath = localOutput;
-
-    ffmpeg.once("close", async (code, signal) => {
-      console.log(`🔴 FFmpeg closed (code=${code}, signal=${signal})`);
-
-      let result = {
-        success: false,
-        fileUrl: null,
-        fileName: null,
-        reason: null
-      };
-
-      try {
-        const stats = fs.existsSync(localOutput)
-          ? fs.statSync(localOutput)
-          : null;
-
-        if (!stats || stats.size < 100 * 1024) {
-          result.reason = "Recording too short / empty";
-        } else {
-          const upload = await uploadToS3ViaPresignedUrl(
-            localOutput,
-            sessionId
-          );
-
-          result = {
-            success: true,
-            fileUrl: upload.fileUrl,
-            fileName: upload.fileName
-          };
-        }
-      } catch (err) {
-        console.error("❌ Upload error:", err.message);
-        result.reason = err.message;
-      }
-
-      // cleanup
-      try {
-        if (fs.existsSync(localOutput)) fs.unlinkSync(localOutput);
-        [videoSdp, ...audioSdps].forEach(f => {
-          if (fs.existsSync(f)) fs.unlinkSync(f);
-        });
-      } catch {}
-
-      resolve(result); // ✅ NEVER NULL
-    });
-
-    ffmpeg.once("error", (err) => {
-      console.error("❌ FFmpeg error:", err.message);
-      resolve({
-        success: false,
-        fileUrl: null,
-        fileName: null,
-        reason: err.message
-      });
-    });
-  });
-};
-
-
-
-
+// // =====================================================
+// // START FFMPEG + HANDLE UPLOAD
+// // =====================================================
 // const startFFmpegWithS3Upload = ({
 //   videoSdp,
 //   audioSdps,
@@ -191,31 +105,117 @@ const startFFmpegWithS3Upload = ({
 //     ffmpeg.once("close", async (code, signal) => {
 //       console.log(`🔴 FFmpeg closed (code=${code}, signal=${signal})`);
 
+//       let result = {
+//         success: false,
+//         fileUrl: null,
+//         fileName: null,
+//         reason: null
+//       };
+
 //       try {
-//         const uploadResult = await uploadToS3ViaPresignedUrl(
-//           localOutput,
-//           sessionId
-//         );
+//         const stats = fs.existsSync(localOutput)
+//           ? fs.statSync(localOutput)
+//           : null;
 
-//         // cleanup
-//         if (fs.existsSync(localOutput)) fs.unlinkSync(localOutput);
-//         [videoSdp, ...audioSdps].forEach((f) => {
-//           if (fs.existsSync(f)) fs.unlinkSync(f);
-//         });
+//         if (!stats || stats.size < 100 * 1024) {
+//           result.reason = "Recording too short / empty";
+//         } else {
+//           const upload = await uploadToS3ViaPresignedUrl(
+//             localOutput,
+//             sessionId
+//           );
 
-//         resolve(uploadResult);
+//           result = {
+//             success: true,
+//             fileUrl: upload.fileUrl,
+//             fileName: upload.fileName
+//           };
+//         }
 //       } catch (err) {
 //         console.error("❌ Upload error:", err.message);
-//         resolve(null); // ⚠️ IMPORTANT: never reject
+//         result.reason = err.message;
 //       }
+
+//       // cleanup
+//       try {
+//         if (fs.existsSync(localOutput)) fs.unlinkSync(localOutput);
+//         [videoSdp, ...audioSdps].forEach(f => {
+//           if (fs.existsSync(f)) fs.unlinkSync(f);
+//         });
+//       } catch {}
+
+//       resolve(result); // ✅ NEVER NULL
 //     });
 
 //     ffmpeg.once("error", (err) => {
 //       console.error("❌ FFmpeg error:", err.message);
-//       resolve(null); // ⚠️ never reject
+//       resolve({
+//         success: false,
+//         fileUrl: null,
+//         fileName: null,
+//         reason: err.message
+//       });
 //     });
 //   });
 // };
+
+
+
+
+const startFFmpegWithS3Upload = ({
+  videoSdp,
+  audioSdps,
+  sessionId,
+  state
+}) => {
+  return new Promise((resolve) => {
+    const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
+    if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
+
+    const localOutput = path.join(
+      TMP_DIR,
+      `recording_${sessionId}_${Date.now()}.mp4`
+    );
+
+    console.log("🎬 FFmpeg output:", localOutput);
+
+    const ffmpeg = startFFmpeg({
+      videoSdp,
+      audioSdps,
+      output: localOutput
+    });
+
+    state.recording.ffmpegProcess = ffmpeg;
+    state.recording.filePath = localOutput;
+
+    ffmpeg.once("close", async (code, signal) => {
+      console.log(`🔴 FFmpeg closed (code=${code}, signal=${signal})`);
+
+      try {
+        const uploadResult = await uploadToS3ViaPresignedUrl(
+          localOutput,
+          sessionId
+        );
+
+        // cleanup
+        if (fs.existsSync(localOutput)) fs.unlinkSync(localOutput);
+        [videoSdp, ...audioSdps].forEach((f) => {
+          if (fs.existsSync(f)) fs.unlinkSync(f);
+        });
+
+        resolve(uploadResult);
+      } catch (err) {
+        console.error("❌ Upload error:", err.message);
+        resolve(null); // ⚠️ IMPORTANT: never reject
+      }
+    });
+
+    ffmpeg.once("error", (err) => {
+      console.error("❌ FFmpeg error:", err.message);
+      resolve(null); // ⚠️ never reject
+    });
+  });
+};
 
 
 

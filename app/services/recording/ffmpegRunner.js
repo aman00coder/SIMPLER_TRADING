@@ -1,4 +1,4 @@
-//ffmpegRunner.js
+//ff
 import { spawn } from "child_process";
 
 export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
@@ -47,7 +47,7 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   // ================= OUTPUT SETTINGS =================
   args.push(
     // Video
-    "-c:v", "libx264",
+    "-c:v", "copy",
     "-preset", "veryfast",
     "-pix_fmt", "yuv420p",
     "-profile:v", "main",
