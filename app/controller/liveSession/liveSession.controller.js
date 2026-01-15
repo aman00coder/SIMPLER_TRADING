@@ -278,76 +278,76 @@ export const startLiveSessionRecording = async (req, res) => {
   }
 };
 
-export const stopLiveSessionRecording = async (req, res) => {
-  try {
-    console.log("🛑 STOP LIVE SESSION RECORDING");
+// export const stopLiveSessionRecording = async (req, res) => {
+//   try {
+//     console.log("🛑 STOP LIVE SESSION RECORDING");
 
-    const { sessionId } = req.params;
-    const state = roomState.get(sessionId);
+//     const { sessionId } = req.params;
+//     const state = roomState.get(sessionId);
 
-    if (!state?.recording?.ffmpegProcess) {
-      return res.status(400).json({
-        success: false,
-        message: "No active recording found"
-      });
-    }
+//     if (!state?.recording?.ffmpegProcess) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "No active recording found"
+//       });
+//     }
 
-    const recording = state.recording;
+//     const recording = state.recording;
 
-    // 1️⃣ Stop FFmpeg
-    try {
-      console.log("🎬 Sending SIGINT to FFmpeg...");
-      recording.ffmpegProcess.kill("SIGINT");
-    } catch {}
+//     // 1️⃣ Stop FFmpeg
+//     try {
+//       console.log("🎬 Sending SIGINT to FFmpeg...");
+//       recording.ffmpegProcess.kill("SIGINT");
+//     } catch {}
 
-    // 2️⃣ Close mediasoup resources
-    try { recording.videoConsumer?.close(); } catch {}
-    recording.audioConsumers?.forEach(c => { try { c.close(); } catch {} });
-    try { recording.videoTransport?.close(); } catch {}
-    recording.audioTransports?.forEach(t => { try { t.close(); } catch {} });
+//     // 2️⃣ Close mediasoup resources
+//     try { recording.videoConsumer?.close(); } catch {}
+//     recording.audioConsumers?.forEach(c => { try { c.close(); } catch {} });
+//     try { recording.videoTransport?.close(); } catch {}
+//     recording.audioTransports?.forEach(t => { try { t.close(); } catch {} });
 
-    // 3️⃣ Wait for upload result
-    let uploadResult = null;
-    if (recording.recordingPromise) {
-      console.log("⏳ Waiting for FFmpeg flush + S3 upload...");
-      uploadResult = await recording.recordingPromise;
-    }
+//     // 3️⃣ Wait for upload result
+//     let uploadResult = null;
+//     if (recording.recordingPromise) {
+//       console.log("⏳ Waiting for FFmpeg flush + S3 upload...");
+//       uploadResult = await recording.recordingPromise;
+//     }
 
-    // 4️⃣ Reset state
-    state.recording = {
-      active: false,
-      videoTransport: null,
-      audioTransports: [],
-      videoConsumer: null,
-      audioConsumers: [],
-      recordingPromise: null,
-      startTime: recording.startTime,
-      ffmpegProcess: null,
-      filePath: null
-    };
+//     // 4️⃣ Reset state
+//     state.recording = {
+//       active: false,
+//       videoTransport: null,
+//       audioTransports: [],
+//       videoConsumer: null,
+//       audioConsumers: [],
+//       recordingPromise: null,
+//       startTime: recording.startTime,
+//       ffmpegProcess: null,
+//       filePath: null
+//     };
 
-    return res.status(200).json({
-      success: true,
-      message: uploadResult?.success
-        ? "Recording stopped and saved successfully"
-        : "Recording stopped but upload failed",
-      data: {
-        sessionId,
-        recordingUrl: uploadResult?.fileUrl || null,
-        fileName: uploadResult?.fileName || null,
-        reason: uploadResult?.reason || null,
-        startedAt: recording.startTime
-      }
-    });
+//     return res.status(200).json({
+//       success: true,
+//       message: uploadResult?.success
+//         ? "Recording stopped and saved successfully"
+//         : "Recording stopped but upload failed",
+//       data: {
+//         sessionId,
+//         recordingUrl: uploadResult?.fileUrl || null,
+//         fileName: uploadResult?.fileName || null,
+//         reason: uploadResult?.reason || null,
+//         startedAt: recording.startTime
+//       }
+//     });
 
-  } catch (error) {
-    console.error("🔥 stopLiveSessionRecording error:", error.message);
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
+//   } catch (error) {
+//     console.error("🔥 stopLiveSessionRecording error:", error.message);
+//     return res.status(500).json({
+//       success: false,
+//       message: error.message
+//     });
+//   }
+// };
 
 
 
