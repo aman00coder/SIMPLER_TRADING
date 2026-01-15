@@ -157,7 +157,7 @@ const uploadToS3ViaPresignedUrl = async (filePath, sessionId) => {
 //       });
 //     });
 //   });
-// };
+// };startFFmpegWithS3Upload 
 
 
 
@@ -177,8 +177,6 @@ const startFFmpegWithS3Upload = ({
       `recording_${sessionId}_${Date.now()}.mp4`
     );
 
-    console.log("🎬 FFmpeg output:", localOutput);
-
     const ffmpeg = startFFmpeg({
       videoSdp,
       audioSdps,
@@ -188,31 +186,59 @@ const startFFmpegWithS3Upload = ({
     state.recording.ffmpegProcess = ffmpeg;
     state.recording.filePath = localOutput;
 
-    ffmpeg.once("close", async (code, signal) => {
-      console.log(`🔴 FFmpeg closed (code=${code}, signal=${signal})`);
+    ffmpeg.once("close", async () => {
+      let result = {
+        success: false,
+        fileUrl: null,
+        fileName: null,
+        reason: null
+      };
 
       try {
-        const uploadResult = await uploadToS3ViaPresignedUrl(
+        if (!fs.existsSync(localOutput)) {
+          result.reason = "Recording file not created";
+          return resolve(result);
+        }
+
+        const stats = fs.statSync(localOutput);
+        if (stats.size < 100 * 1024) {
+          result.reason = "Recording too short / empty";
+          return resolve(result);
+        }
+
+        const upload = await uploadToS3ViaPresignedUrl(
           localOutput,
           sessionId
         );
 
-        // cleanup
-        if (fs.existsSync(localOutput)) fs.unlinkSync(localOutput);
-        [videoSdp, ...audioSdps].forEach((f) => {
-          if (fs.existsSync(f)) fs.unlinkSync(f);
-        });
+        result = {
+          success: true,
+          fileUrl: upload.fileUrl,
+          fileName: upload.fileName
+        };
 
-        resolve(uploadResult);
       } catch (err) {
-        console.error("❌ Upload error:", err.message);
-        resolve(null); // ⚠️ IMPORTANT: never reject
+        result.reason = err.message;
       }
+
+      // cleanup
+      try {
+        fs.existsSync(localOutput) && fs.unlinkSync(localOutput);
+        [videoSdp, ...audioSdps].forEach(f => {
+          fs.existsSync(f) && fs.unlinkSync(f);
+        });
+      } catch {}
+
+      resolve(result); // ✅ NEVER NULL
     });
 
     ffmpeg.once("error", (err) => {
-      console.error("❌ FFmpeg error:", err.message);
-      resolve(null); // ⚠️ never reject
+      resolve({
+        success: false,
+        fileUrl: null,
+        fileName: null,
+        reason: err.message
+      });
     });
   });
 };
