@@ -1,5 +1,5 @@
 
-
+// liveeSession.model.js
 import mongoose from "mongoose";
 import { ROLE_MAP } from "../../constant/role.js";
 
