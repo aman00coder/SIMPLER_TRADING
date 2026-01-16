@@ -1,9 +1,11 @@
+//liveSessionParticipant.controller.js
 import mongoose from "mongoose";
 import HttpStatus from "http-status-codes";
 import liveSessionParticipantModel from "../../model/liveSessionParticipant/liveSessionParticipant.model.js";
 import liveSessionModel from "../../model/liveSessions/liveeSession.model.js";
 import whiteboardModel from "../../model/whiteBoards/whiteBoard.model.js";
 import { sendSuccessResponse, sendErrorResponse } from "../../responses/responses.js";
+
 import { errorEn, successEn } from "../../responses/message.js";
 import { ROLE_MAP } from "../../constant/role.js";
 import { v4 as uuidv4 } from "uuid";
