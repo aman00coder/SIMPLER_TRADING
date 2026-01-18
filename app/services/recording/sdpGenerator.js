@@ -1,12 +1,40 @@
 import fs from "fs";
 
+// export const generateSDP = ({ ip, port, kind, rtpParameters }) => {
+//   const codec = rtpParameters.codecs[0];
+//   const pt = codec.payloadType;
+//   const clockRate = codec.clockRate;
+//   const codecName = codec.mimeType.split("/")[1];
+//   console.log("📝 SDP FILE PATH:", sdpFilePath);
+//   const ssrc = rtpParameters.encodings[0].ssrc;
+
+//   return `v=0
+// o=- 0 0 IN IP4 ${ip}
+// s=Mediasoup Record
+// c=IN IP4 ${ip}
+// t=0 0
+// m=${kind} ${port} RTP/AVP ${pt}
+// a=rtpmap:${pt} ${codecName}/${clockRate}
+// a=ssrc:${ssrc} cname:mediasoup
+// a=sendrecv
+// `;
+// };
+
 export const generateSDP = ({ ip, port, kind, rtpParameters }) => {
+  console.log("🧪 SDP DEBUG ======================");
+  console.log("IP:", ip);
+  console.log("PORT:", port);
+  console.log("KIND:", kind);
+  console.log("SSRC:", rtpParameters.encodings?.[0]?.ssrc);
+  console.log("CODEC:", rtpParameters.codecs?.[0]?.mimeType);
+  console.log("==================================");
+ 
   const codec = rtpParameters.codecs[0];
   const pt = codec.payloadType;
   const clockRate = codec.clockRate;
   const codecName = codec.mimeType.split("/")[1];
   const ssrc = rtpParameters.encodings[0].ssrc;
-
+ 
   return `v=0
 o=- 0 0 IN IP4 ${ip}
 s=Mediasoup Record
