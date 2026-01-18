@@ -120,13 +120,21 @@ const startFFmpegWithS3Upload = ({
         resolve(uploadResult);
       } catch (err) {
         console.error("❌ Upload error:", err.message);
-        resolve(null); // ⚠️ IMPORTANT: never reject
+        resolve({
+          fileUrl: null,
+          fileName: null,
+          error: err.message
+        });
       }
     });
 
     ffmpeg.once("error", (err) => {
       console.error("❌ FFmpeg error:", err.message);
-      resolve(null); // ⚠️ never reject
+      resolve({
+        fileUrl: null,
+        fileName: null,
+        error: err.message
+      });
     });
   });
 };
@@ -151,12 +159,10 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     };
   }
 
-  // ================= PORTS =================
   const VIDEO_PORT = 5004;
   const VIDEO_RTCP_PORT = 5005;
   const AUDIO_BASE_PORT = 6000;
 
-  // ================= VIDEO =================
   const videoTransport = await router.createPlainTransport({
     listenIp: { ip: "127.0.0.1" },
     rtcpMux: false,
@@ -179,7 +185,6 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
 
   await videoConsumer.resume();
 
-  // ================= AUDIO =================
   const audioConsumers = [];
   const audioTransports = [];
 
@@ -214,14 +219,11 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     }
   }
 
-  // ================= SDP =================
   const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
   const base = path.join(TMP_DIR, `session-${sessionId}`);
 
   const videoSdp = `${base}-video.sdp`;
-  const audioSdps = audioConsumers.map(
-    (_, i) => `${base}-audio-${i}.sdp`
-  );
+  const audioSdps = audioConsumers.map((_, i) => `${base}-audio-${i}.sdp`);
 
   saveSDPFile(
     videoSdp,
@@ -245,7 +247,6 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     );
   });
 
-  // ================= START FFMPEG =================
   const recordingPromise = startFFmpegWithS3Upload({
     videoSdp,
     audioSdps,
@@ -253,7 +254,6 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     state
   });
 
-  // ================= STATE UPDATE =================
   state.recording.active = true;
   state.recording.startTime = new Date();
   state.recording.videoTransport = videoTransport;

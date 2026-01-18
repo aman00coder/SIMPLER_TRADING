@@ -297,16 +297,30 @@ export const stopLiveSessionRecording = async (req, res) => {
     console.log("🎬 Sending SIGINT to FFmpeg...");
     ffmpeg.kill("SIGINT");
 
-    // ✅ WAIT FOR FFMPEG + S3 UPLOAD COMPLETION
+    // ✅ WAIT FOR FFMPEG + UPLOAD
     const uploadResult = await state.recording.recordingPromise;
 
-    if (!uploadResult?.fileUrl) {
-      throw new Error("Recording uploaded but fileUrl missing");
+    // ❗ SAFE HANDLING (NO CRASH)
+    if (!uploadResult || !uploadResult.fileUrl) {
+      console.warn("⚠️ Recording upload failed:", uploadResult?.error);
+
+      state.recording.active = false;
+      state.recording.ffmpegProcess = null;
+      state.recording.recordingPromise = null;
+
+      return res.status(200).json({
+        success: true,
+        message: "Recording stopped, but upload failed",
+        data: {
+          sessionId,
+          recordingUrl: null,
+          error: uploadResult?.error || "Upload failed"
+        }
+      });
     }
 
     console.log("✅ Upload finished:", uploadResult.fileUrl);
 
-    // ✅ SAVE RECORDING IN DB
     await liveSessionModel.findOneAndUpdate(
       { sessionId },
       {
@@ -320,7 +334,6 @@ export const stopLiveSessionRecording = async (req, res) => {
       }
     );
 
-    // ✅ CLEAN STATE
     state.recording.active = false;
     state.recording.ffmpegProcess = null;
     state.recording.recordingPromise = null;
