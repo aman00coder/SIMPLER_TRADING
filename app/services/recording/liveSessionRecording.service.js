@@ -1,7 +1,3 @@
-// =====================================================
-// LIVE SESSION RECORDING SERVICE (FIXED & STABLE)
-// =====================================================
-
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -159,6 +155,13 @@ const startFFmpegWithS3Upload = ({
   });
 };
 
+// =====================================================
+// HELPER: GET SERVER IP
+// =====================================================
+const getServerIp = () => {
+  // Default IP अगर environment variable सेट नहीं है
+  return process.env.SERVER_IP || "127.0.0.1";
+};
 
 // =====================================================
 // MAIN ENTRY: START LIVE RECORDING
@@ -185,15 +188,21 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
   const VIDEO_RTCP_PORT = 5005;
   const AUDIO_BASE_PORT = 6000;
 
-  // ================= VIDEO =================
+  // ================= SERVER IP =================
+  const serverIp = process.env.SERVER_IP;
+
+  // ================= VIDEO TRANSPORT =================
   const videoTransport = await router.createPlainTransport({
-    listenIp: { ip: "127.0.0.1" },
+    listenIp: { 
+      ip: "0.0.0.0",
+      announcedIp: serverIp
+    },
     rtcpMux: false,
     comedia: false
   });
 
   await videoTransport.connect({
-    ip: "127.0.0.1",
+    ip: serverIp,
     port: VIDEO_PORT,
     rtcpPort: VIDEO_RTCP_PORT
   });
@@ -208,7 +217,7 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
 
   await videoConsumer.resume();
 
-  // ================= AUDIO =================
+  // ================= AUDIO TRANSPORTS =================
   const audioConsumers = [];
   const audioTransports = [];
 
@@ -218,13 +227,16 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
       const port = AUDIO_BASE_PORT + index * 2;
 
       const audioTransport = await router.createPlainTransport({
-        listenIp: { ip: "127.0.0.1" },
+        listenIp: { 
+          ip: "0.0.0.0",
+          announcedIp: serverIp
+        },
         rtcpMux: false,
         comedia: false
       });
 
       await audioTransport.connect({
-        ip: "127.0.0.1",
+        ip: serverIp,
         port,
         rtcpPort: port + 1
       });
@@ -243,7 +255,7 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     }
   }
 
-  // ================= SDP =================
+  // ================= SDP FILES =================
   const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
   const base = path.join(TMP_DIR, `session-${sessionId}`);
 
@@ -252,10 +264,11 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     (_, i) => `${base}-audio-${i}.sdp`
   );
 
+  // SDP files में भी server IP का उपयोग करें
   saveSDPFile(
     videoSdp,
     generateSDP({
-      ip: "127.0.0.1",
+      ip: serverIp,
       port: VIDEO_PORT,
       kind: "video",
       rtpParameters: videoConsumer.rtpParameters
@@ -266,7 +279,7 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     saveSDPFile(
       audioSdps[i],
       generateSDP({
-        ip: "127.0.0.1",
+        ip: serverIp,
         port: a.port,
         kind: "audio",
         rtpParameters: a.consumer.rtpParameters
@@ -292,6 +305,8 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
   state.recording.recordingPromise = recordingPromise;
 
   console.log("✅ Recording started");
+  console.log("📡 Server IP configured:", serverIp);
+  console.log("🔊 Audio consumers:", audioConsumers.length);
 
   return state.recording;
 };
