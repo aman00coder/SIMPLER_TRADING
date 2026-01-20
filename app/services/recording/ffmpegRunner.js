@@ -1,18 +1,12 @@
-// services/recording/ffmpegRunner.js
 import { spawn } from "child_process";
 
-// =================================================
-// START FFMPEG
-// =================================================
 export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   const args = [
     "-y",
-
-    // ================= LOGGING =================
     "-loglevel", "warning",
     "-stats",
 
-    // ================= RTP INPUT STABILITY =================
+    // RTP stability
     "-fflags", "+genpts+igndts",
     "-flags", "low_delay",
     "-use_wallclock_as_timestamps", "1",
@@ -23,12 +17,12 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     "-analyzeduration", "15000000",
     "-probesize", "15000000",
 
-    // ================= VIDEO INPUT =================
+    // Video SDP (index 0)
     "-protocol_whitelist", "file,udp,rtp,pipe",
     "-i", videoSdp
   ];
 
-  // ================= AUDIO INPUTS =================
+  // Audio SDPs (index 1,2,3...)
   audioSdps.forEach((sdp) => {
     args.push(
       "-protocol_whitelist", "file,udp,rtp,pipe",
@@ -36,50 +30,59 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     );
   });
 
-  // ================= AUDIO MIXING =================
-  if (audioSdps.length > 0) {
-    args.push(
-  "-filter_complex",
-  "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,fps=25[v];" +
-  "[1:a][2:a]amix=inputs=2:dropout_transition=2,aresample=async=1:first_pts=0[a]",
-  "-map", "[v]",
-  "-map", "[a]",
+  // ================= FILTER COMPLEX (DYNAMIC) =================
+  const audioInputCount = audioSdps.length;
 
+  let filterComplex = "";
 
-    );
-  } else {
-    args.push("-map", "0:v");
+  // 🎥 VIDEO FILTER (always)
+  filterComplex +=
+    "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,fps=25[v];";
+
+  // 🎤 AUDIO FILTER (dynamic)
+  if (audioInputCount === 1) {
+    filterComplex +=
+      "[1:a]aresample=async=1:first_pts=0[a]";
+  } else if (audioInputCount > 1) {
+    const audioInputs = audioSdps
+      .map((_, i) => `[${i + 1}:a]`)
+      .join("");
+
+    filterComplex +=
+      `${audioInputs}amix=inputs=${audioInputCount}:dropout_transition=2,aresample=async=1:first_pts=0[a]`;
   }
 
-  // ================= OUTPUT SETTINGS =================
-args.push(
-// ❗❗ VIDEO (FINAL)
-"-fps_mode", "vfr",
-"-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,fps=25",
-"-c:v", "libx264",
-"-preset", "veryfast",
-"-pix_fmt", "yuv420p",
-"-profile:v", "main",
-"-g", "50",
-"-maxrate", "2500k",
-"-bufsize", "5000k",
-"-crf", "23",
+  args.push(
+    "-filter_complex", filterComplex,
+    "-map", "[v]",
+    "-map", "[a]"
+  );
 
+  // ================= OUTPUT =================
+  args.push(
+    "-fps_mode", "vfr",
 
+    // Video
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-pix_fmt", "yuv420p",
+    "-profile:v", "main",
+    "-g", "50",
+    "-maxrate", "2500k",
+    "-bufsize", "5000k",
+    "-crf", "23",
 
+    // Audio
+    "-c:a", "aac",
+    "-b:a", "128k",
+    "-ar", "48000",
+    "-ac", "2",
 
-  // Audio
-  "-c:a", "aac",
-  "-b:a", "128k",
-  "-ar", "48000",
-  "-ac", "2",
-
-  // MP4
-  "-movflags", "+faststart",
-  "-f", "mp4",
-  output
-);
-
+    // MP4
+    "-movflags", "+faststart",
+    "-f", "mp4",
+    output
+  );
 
   console.log("🎬 FFmpeg command:\nffmpeg", args.join(" "));
 
@@ -89,67 +92,8 @@ args.push(
 
   ffmpeg.stderr.on("data", (data) => {
     const line = data.toString().trim();
-    if (line && !line.includes("frame=")) {
-      console.log("🎥 FFmpeg:", line);
-    }
-  });
-
-  ffmpeg.on("error", (err) => {
-    console.error("❌ FFmpeg process error:", err.message);
+    if (line) console.log("🎥 FFmpeg:", line);
   });
 
   return ffmpeg;
-};
-
-// =================================================
-// WAIT FOR FFMPEG EXIT
-// =================================================
-export const waitForFFmpegExit = (ffmpegProcess, timeoutMs = 15000) => {
-  return new Promise((resolve) => {
-    let finished = false;
-
-    const timeout = setTimeout(() => {
-      if (finished) return;
-      finished = true;
-      console.warn("⚠️ FFmpeg exit timeout, force killing...");
-      try {
-        ffmpegProcess.kill("SIGKILL");
-      } catch {}
-      resolve();
-    }, timeoutMs);
-
-    ffmpegProcess.once("close", (code, signal) => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timeout);
-      console.log(`🎬 FFmpeg closed - code=${code}, signal=${signal}`);
-      resolve();
-    });
-
-    ffmpegProcess.once("error", () => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timeout);
-      resolve();
-    });
-  });
-};
-
-// =================================================
-// SAFE KILL
-// =================================================
-export const killFFmpegProcess = (ffmpegProcess) => {
-  if (!ffmpegProcess || ffmpegProcess.killed) return true;
-
-  try {
-    ffmpegProcess.kill("SIGINT");
-    setTimeout(() => {
-      if (!ffmpegProcess.killed) {
-        ffmpegProcess.kill("SIGKILL");
-      }
-    }, 3000);
-    return true;
-  } catch {
-    return false;
-  }
 };
