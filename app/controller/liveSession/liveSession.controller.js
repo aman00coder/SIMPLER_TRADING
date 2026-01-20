@@ -185,13 +185,27 @@ export const startLiveSessionRecording = async (req, res) => {
     }
 
     if (state.createdBy?.toString() !== userId) {
-      return sendErrorResponse(res, "Unauthorized", HttpStatus.UNAUTHORIZED);
+      return sendErrorResponse(
+        res,
+        "Unauthorized",
+        HttpStatus.UNAUTHORIZED
+      );
     }
 
     if (state.recording?.active) {
       return sendErrorResponse(
         res,
         "Recording already running",
+        HttpStatus.BAD_REQUEST
+      );
+    }
+
+    // 🔥 MUST FIX: video producer guard
+    // 👉 audio-only ya empty session me recording start nahi hogi
+    if (!state.videoProducer || state.videoProducer.closed) {
+      return sendErrorResponse(
+        res,
+        "Video is not live yet. Please turn on camera or screen share before recording.",
         HttpStatus.BAD_REQUEST
       );
     }
