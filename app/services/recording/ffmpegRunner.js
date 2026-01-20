@@ -9,14 +9,12 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     "-loglevel", "warning",
     "-stats",
 
-    // ================= TIMESTAMP & SYNC FIXES =================
+    // ================= INPUT / TIMESTAMP FIXES =================
     "-fflags", "+genpts",
     "-use_wallclock_as_timestamps", "1",
-    "-fps_mode", "cfr",                    // ✅ replaces -vsync
     "-async", "1",
-    "-max_delay", "4000000",               // ✅ increased buffer
+    "-max_delay", "4000000",
     "-rw_timeout", "5000000",
-
     "-analyzeduration", "10000000",
     "-probesize", "10000000",
 
@@ -47,8 +45,11 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     args.push("-map", "0:v");
   }
 
-  // ================= OUTPUT SETTINGS =================
+  // ================= OUTPUT SETTINGS (IMPORTANT) =================
   args.push(
+    // 🔥 OUTPUT-only options
+    "-fps_mode", "cfr",
+
     // Video
     "-c:v", "libx264",
     "-preset", "veryfast",
@@ -56,7 +57,7 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     "-profile:v", "main",
     "-r", "30",
     "-g", "60",
-    "-force_key_frames", "expr:gte(t,n_forced*2)", // ✅ keyframe safety
+    "-force_key_frames", "expr:gte(t,n_forced*2)",
     "-crf", "23",
 
     // Audio
