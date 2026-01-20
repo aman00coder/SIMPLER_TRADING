@@ -55,11 +55,11 @@ args.push(
   "-fps_mode", "vfr",
 
 // Video
+"-vf", "scale=1920:1080:force_original_aspect_ratio=decrease",
 "-c:v", "libx264",
 "-preset", "veryfast",
 "-pix_fmt", "yuv420p",
 "-profile:v", "main",
-"-level:v", "4.2",
 "-g", "60",
 "-maxrate", "2500k",
 "-bufsize", "5000k",

@@ -232,7 +232,7 @@ export const stopLiveSessionRecording = async (req, res) => {
     const { sessionId } = req.params;
     const state = roomState.get(sessionId);
 
-    if (!state?.recording?.ffmpegProcess) {
+    if (!state || !state.recording || !state.recording.ffmpegProcess) {
       return sendErrorResponse(
         res,
         "No active recording found",
@@ -242,31 +242,56 @@ export const stopLiveSessionRecording = async (req, res) => {
 
     const recording = state.recording;
 
+    // 🔒 Prevent double stop
+    if (!recording.active) {
+      return sendErrorResponse(
+        res,
+        "Recording already stopped",
+        HttpStatus.BAD_REQUEST
+      );
+    }
+
     console.log("🛑 Stopping live recording...");
+
+    // 🔥 IMPORTANT: mark inactive early
+    recording.active = false;
 
     // 1️⃣ Stop FFmpeg gracefully
     try {
-      recording.ffmpegProcess.kill("SIGINT");
-      await waitForFFmpegExit(recording.ffmpegProcess);
-    } catch {}
-
-    // 2️⃣ Close mediasoup resources
-    try { recording.videoConsumer?.close(); } catch {}
-    recording.audioConsumers?.forEach((c) => {
-      try { c.close(); } catch {}
-    });
-    try { recording.videoTransport?.close(); } catch {}
-    recording.audioTransports?.forEach((t) => {
-      try { t.close(); } catch {}
-    });
-
-    // 3️⃣ Wait for upload result
-    let uploadResult = null;
-    if (recording.recordingPromise) {
-      uploadResult = await recording.recordingPromise;
+      if (!recording.ffmpegProcess.killed) {
+        recording.ffmpegProcess.kill("SIGINT");
+        await waitForFFmpegExit(recording.ffmpegProcess);
+      }
+    } catch (err) {
+      console.warn("⚠️ FFmpeg stop warning:", err.message);
     }
 
-    // 4️⃣ Reset state
+    // 2️⃣ Close mediasoup resources (safe order)
+    try { recording.videoConsumer?.close(); } catch {}
+    if (Array.isArray(recording.audioConsumers)) {
+      recording.audioConsumers.forEach((c) => {
+        try { c.close(); } catch {}
+      });
+    }
+
+    try { recording.videoTransport?.close(); } catch {}
+    if (Array.isArray(recording.audioTransports)) {
+      recording.audioTransports.forEach((t) => {
+        try { t.close(); } catch {}
+      });
+    }
+
+    // 3️⃣ Wait for upload result (if exists)
+    let uploadResult = null;
+    try {
+      if (recording.recordingPromise) {
+        uploadResult = await recording.recordingPromise;
+      }
+    } catch (err) {
+      console.error("🔥 Upload failed:", err.message);
+    }
+
+    // 4️⃣ Reset recording state completely
     state.recording = {
       active: false,
       videoTransport: null,
@@ -301,7 +326,6 @@ export const stopLiveSessionRecording = async (req, res) => {
     );
   }
 };
-
 
 
 
