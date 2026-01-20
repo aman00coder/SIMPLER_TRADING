@@ -1,6 +1,9 @@
 // services/recording/ffmpegRunner.js
 import { spawn } from "child_process";
 
+// =================================================
+// START FFMPEG
+// =================================================
 export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   const args = [
     "-y",
@@ -9,10 +12,10 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     "-loglevel", "warning",
     "-stats",
 
-    // ================= INPUT / TIMESTAMP FIXES =================
+    // ================= RTP INPUT STABILITY =================
     "-fflags", "+genpts",
-    "-use_wallclock_as_timestamps", "1",
-    "-async", "1",
+    "-reorder_queue_size", "2000",
+    "-rtbufsize", "150M",
     "-max_delay", "4000000",
     "-rw_timeout", "5000000",
     "-analyzeduration", "10000000",
@@ -45,9 +48,8 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     args.push("-map", "0:v");
   }
 
-  // ================= OUTPUT SETTINGS (IMPORTANT) =================
+  // ================= OUTPUT SETTINGS =================
   args.push(
-    // 🔥 OUTPUT-only options
     "-fps_mode", "cfr",
 
     // Video
@@ -57,6 +59,8 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     "-profile:v", "main",
     "-r", "30",
     "-g", "60",
+    "-maxrate", "2500k",
+    "-bufsize", "5000k",
     "-force_key_frames", "expr:gte(t,n_forced*2)",
     "-crf", "23",
 
@@ -92,22 +96,55 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   return ffmpeg;
 };
 
+// =================================================
+// WAIT FOR FFMPEG EXIT (🔥 THIS FIXES YOUR ERROR)
+// =================================================
 export const waitForFFmpegExit = (ffmpegProcess, timeoutMs = 10000) => {
   return new Promise((resolve) => {
-    let settled = false;
+    let finished = false;
 
     const timeout = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      ffmpegProcess.kill("SIGKILL");
+      if (finished) return;
+      finished = true;
+      console.warn("⚠️ FFmpeg exit timeout, force killing...");
+      try {
+        ffmpegProcess.kill("SIGKILL");
+      } catch {}
       resolve();
     }, timeoutMs);
 
-    ffmpegProcess.once("close", () => {
-      if (settled) return;
-      settled = true;
+    ffmpegProcess.once("close", (code, signal) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      console.log(`🎬 FFmpeg closed - code=${code}, signal=${signal}`);
+      resolve();
+    });
+
+    ffmpegProcess.once("error", () => {
+      if (finished) return;
+      finished = true;
       clearTimeout(timeout);
       resolve();
     });
   });
+};
+
+// =================================================
+// SAFE KILL (OPTIONAL)
+// =================================================
+export const killFFmpegProcess = (ffmpegProcess) => {
+  if (!ffmpegProcess || ffmpegProcess.killed) return true;
+
+  try {
+    ffmpegProcess.kill("SIGINT");
+    setTimeout(() => {
+      if (!ffmpegProcess.killed) {
+        ffmpegProcess.kill("SIGKILL");
+      }
+    }, 3000);
+    return true;
+  } catch {
+    return false;
+  }
 };
