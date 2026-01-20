@@ -39,11 +39,12 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   // ================= AUDIO MIXING =================
   if (audioSdps.length > 0) {
     args.push(
-    "-filter_complex",
-    "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,fps=25[v];" +
-    "[1:a]aresample=async=1:first_pts=0[a]",
-    "-map", "[v]",
-    "-map", "[a]",
+  "-filter_complex",
+  "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,fps=25[v];" +
+  "[1:a][2:a]amix=inputs=2:dropout_transition=2,aresample=async=1:first_pts=0[a]",
+  "-map", "[v]",
+  "-map", "[a]",
+
 
     );
   } else {
