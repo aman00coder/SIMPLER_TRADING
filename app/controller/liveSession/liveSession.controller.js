@@ -185,11 +185,7 @@ export const startLiveSessionRecording = async (req, res) => {
     }
 
     if (state.createdBy?.toString() !== userId) {
-      return sendErrorResponse(
-        res,
-        "Unauthorized",
-        HttpStatus.UNAUTHORIZED
-      );
+      return sendErrorResponse(res, "Unauthorized", HttpStatus.UNAUTHORIZED);
     }
 
     if (state.recording?.active) {
@@ -200,12 +196,15 @@ export const startLiveSessionRecording = async (req, res) => {
       );
     }
 
-    // 🔥 MUST FIX: video producer guard
-    // 👉 audio-only ya empty session me recording start nahi hogi
-    if (!state.videoProducer || state.videoProducer.closed) {
+    // ✅ CORRECT VIDEO CHECK (FIX)
+    const hasVideoProducer = Array.from(state.producers?.values() || []).some(
+      (p) => p.kind === "video" && !p.closed
+    );
+
+    if (!hasVideoProducer) {
       return sendErrorResponse(
         res,
-        "Video is not live yet. Please turn on camera or screen share before recording.",
+        "Video is not live yet. Please turn on camera.",
         HttpStatus.BAD_REQUEST
       );
     }
@@ -237,6 +236,7 @@ export const startLiveSessionRecording = async (req, res) => {
     );
   }
 };
+
 
 // =====================================================
 // STOP RECORDING
