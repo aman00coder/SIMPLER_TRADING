@@ -12,14 +12,14 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     "-loglevel", "warning",
     "-stats",
 
-    // ================= RTP INPUT STABILITY =================
-    "-fflags", "+genpts",
-    "-reorder_queue_size", "2000",
-    "-rtbufsize", "150M",
-    "-max_delay", "4000000",
-    "-rw_timeout", "5000000",
-    "-analyzeduration", "10000000",
-    "-probesize", "10000000",
+    // ================= RTP INPUT STABILITY (FIXED) =================
+    "-fflags", "+genpts+igndts",
+    "-reorder_queue_size", "5000",
+    "-rtbufsize", "300M",
+    "-max_delay", "10000000",
+    "-rw_timeout", "10000000",
+    "-analyzeduration", "15000000",
+    "-probesize", "15000000",
 
     // ================= VIDEO INPUT =================
     "-protocol_whitelist", "file,udp,rtp,pipe",
@@ -50,7 +50,8 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
 
   // ================= OUTPUT SETTINGS =================
   args.push(
-    "-fps_mode", "cfr",
+    // IMPORTANT: CFR REMOVED
+    "-fps_mode", "vfr",
 
     // Video
     "-c:v", "libx264",
@@ -97,9 +98,9 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
 };
 
 // =================================================
-// WAIT FOR FFMPEG EXIT (🔥 THIS FIXES YOUR ERROR)
+// WAIT FOR FFMPEG EXIT
 // =================================================
-export const waitForFFmpegExit = (ffmpegProcess, timeoutMs = 10000) => {
+export const waitForFFmpegExit = (ffmpegProcess, timeoutMs = 15000) => {
   return new Promise((resolve) => {
     let finished = false;
 
@@ -131,7 +132,7 @@ export const waitForFFmpegExit = (ffmpegProcess, timeoutMs = 10000) => {
 };
 
 // =================================================
-// SAFE KILL (OPTIONAL)
+// SAFE KILL
 // =================================================
 export const killFFmpegProcess = (ffmpegProcess) => {
   if (!ffmpegProcess || ffmpegProcess.killed) return true;
