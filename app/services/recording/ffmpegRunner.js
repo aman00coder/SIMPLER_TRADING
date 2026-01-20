@@ -54,16 +54,18 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
 args.push(
   "-fps_mode", "vfr",
 
-  // Video
-  "-c:v", "libx264",
-  "-preset", "veryfast",
-  "-pix_fmt", "yuv420p",
-  "-profile:v", "main",
-  "-g", "60",
-  "-maxrate", "2500k",
-  "-bufsize", "5000k",
-  "-force_key_frames", "expr:gte(t,n_forced*2)",
-  "-crf", "23",
+// Video
+"-c:v", "libx264",
+"-preset", "veryfast",
+"-pix_fmt", "yuv420p",
+"-profile:v", "main",
+"-level:v", "4.2",
+"-g", "60",
+"-maxrate", "2500k",
+"-bufsize", "5000k",
+"-force_key_frames", "expr:gte(t,n_forced*2)",
+"-crf", "23",
+
 
   // Audio
   "-c:a", "aac",
