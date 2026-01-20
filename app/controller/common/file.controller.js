@@ -1,19 +1,43 @@
 // controllers/common/file.controller.js
 
 import HttpStatus from "http-status-codes";
+import path from "path";
 import { generatePresignedUrl } from "../../middleware/pre-signed.url.js";
 import { sendSuccessResponse, sendErrorResponse } from "../../responses/responses.js";
 
-/**
- * =================================================
- * Generate Single Pre-Signed URL
- * =================================================
- */
+// =====================================================
+// HELPERS
+// =====================================================
+const sanitizeFileName = (fileName) => {
+  const base = path.basename(fileName);
+  return base.replace(/[^a-zA-Z0-9._-]/g, "_");
+};
+
+const allowedTypes = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "text/plain"
+];
+
+// =====================================================
+// Generate Single Pre-Signed URL
+// =====================================================
 export const getPresignedUrl = async (req, res) => {
   try {
-    const { fileName, fileType, folder } = req.body;
+    let { fileName, fileType, folder, fileSize } = req.body;
 
-    // Basic validation
     if (!fileName || !fileType) {
       return sendErrorResponse(
         res,
@@ -21,25 +45,6 @@ export const getPresignedUrl = async (req, res) => {
         HttpStatus.BAD_REQUEST
       );
     }
-
-    // Allowed MIME types
-    const allowedTypes = [
-      "image/jpeg",
-      "image/png",
-      "image/webp",
-      "image/gif",
-      "video/mp4",
-      "video/webm",
-      "video/quicktime",
-      "application/pdf",
-      "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "application/vnd.ms-excel",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "application/vnd.ms-powerpoint",
-      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-      "text/plain"
-    ];
 
     if (!allowedTypes.includes(fileType)) {
       return sendErrorResponse(
@@ -49,9 +54,20 @@ export const getPresignedUrl = async (req, res) => {
       );
     }
 
-    // Generate signed URL
+    // 🔐 Optional size limit (example: 500MB for videos)
+    if (fileSize && fileSize > 500 * 1024 * 1024) {
+      return sendErrorResponse(
+        res,
+        "File size exceeds 500MB limit",
+        HttpStatus.BAD_REQUEST
+      );
+    }
+
+    // 🔒 Sanitize filename
+    const safeFileName = sanitizeFileName(fileName);
+
     const result = await generatePresignedUrl({
-      fileName,
+      fileName: safeFileName,
       fileType,
       folder: folder || "uploads"
     });
@@ -78,11 +94,9 @@ export const getPresignedUrl = async (req, res) => {
   }
 };
 
-/**
- * =================================================
- * Generate Multiple Pre-Signed URLs (Bulk Upload)
- * =================================================
- */
+// =====================================================
+// Generate Multiple Pre-Signed URLs (Bulk Upload)
+// =====================================================
 export const getBulkPresignedUrls = async (req, res) => {
   try {
     const { files } = req.body;
@@ -106,12 +120,18 @@ export const getBulkPresignedUrls = async (req, res) => {
     const results = await Promise.all(
       files.map(async (file) => {
         try {
-          if (!file.fileName || !file.fileType) {
+          if (!file?.fileName || !file?.fileType) {
             throw new Error("fileName and fileType required");
           }
 
+          if (!allowedTypes.includes(file.fileType)) {
+            throw new Error(`File type not allowed: ${file.fileType}`);
+          }
+
+          const safeFileName = sanitizeFileName(file.fileName);
+
           const result = await generatePresignedUrl({
-            fileName: file.fileName,
+            fileName: safeFileName,
             fileType: file.fileType,
             folder: file.folder || "uploads"
           });
@@ -126,7 +146,7 @@ export const getBulkPresignedUrls = async (req, res) => {
           };
         } catch (err) {
           return {
-            originalName: file?.fileName,
+            originalName: file?.fileName || null,
             success: false,
             error: err.message
           };
