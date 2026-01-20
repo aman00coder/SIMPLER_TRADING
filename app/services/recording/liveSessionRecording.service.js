@@ -1,3 +1,4 @@
+// services/recording/liveSessionRecording.services.js
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -31,8 +32,8 @@ const uploadToS3ViaPresignedUrl = async (filePath, sessionId) => {
   console.log("📤 Uploading recording to S3...");
 
   const stats = fs.statSync(filePath);
-  if (stats.size < 100 * 1024) {
-    throw new Error("Recording file too small (empty recording)");
+  if (!stats || stats.size < 100 * 1024) {
+    throw new Error("Recording file too small / empty");
   }
 
   const fileName = `recording_${sessionId}_${Date.now()}.mp4`;
@@ -60,7 +61,7 @@ const uploadToS3ViaPresignedUrl = async (filePath, sessionId) => {
     throw new Error(`S3 upload failed: ${response.status} ${text}`);
   }
 
-  console.log("✅ Uploaded:", presigned.fileUrl);
+  console.log("✅ Uploaded to S3:", presigned.fileUrl);
 
   return {
     fileUrl: presigned.fileUrl,
@@ -80,14 +81,16 @@ const startFFmpegWithS3Upload = ({
 }) => {
   return new Promise((resolve) => {
     const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
-    if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
+    if (!fs.existsSync(TMP_DIR)) {
+      fs.mkdirSync(TMP_DIR, { recursive: true });
+    }
 
     const localOutput = path.join(
       TMP_DIR,
       `recording_${sessionId}_${Date.now()}.mp4`
     );
 
-    console.log("🎬 FFmpeg output:", localOutput);
+    console.log("🎬 FFmpeg output file:", localOutput);
 
     const ffmpeg = startFFmpeg({
       videoSdp,
@@ -105,6 +108,7 @@ const startFFmpegWithS3Upload = ({
         success: false,
         fileUrl: null,
         fileName: null,
+        duration: 0,
         reason: null
       };
 
@@ -121,34 +125,39 @@ const startFFmpegWithS3Upload = ({
             sessionId
           );
 
+          const endTime = Date.now();
+          const startTime = state.recording.startTime?.getTime() || endTime;
+
           result = {
             success: true,
             fileUrl: upload.fileUrl,
-            fileName: upload.fileName
+            fileName: upload.fileName,
+            duration: Math.floor((endTime - startTime) / 1000)
           };
         }
       } catch (err) {
-        console.error("❌ Upload error:", err.message);
+        console.error("❌ Recording upload error:", err.message);
         result.reason = err.message;
       }
 
-      // cleanup
+      // ================= CLEANUP =================
       try {
         if (fs.existsSync(localOutput)) fs.unlinkSync(localOutput);
-        [videoSdp, ...audioSdps].forEach(f => {
+        [videoSdp, ...audioSdps].forEach((f) => {
           if (fs.existsSync(f)) fs.unlinkSync(f);
         });
       } catch {}
 
-      resolve(result); // ✅ NEVER NULL
+      resolve(result); // ✅ ALWAYS RESOLVE
     });
 
     ffmpeg.once("error", (err) => {
-      console.error("❌ FFmpeg error:", err.message);
+      console.error("❌ FFmpeg runtime error:", err.message);
       resolve({
         success: false,
         fileUrl: null,
         fileName: null,
+        duration: 0,
         reason: err.message
       });
     });
@@ -156,18 +165,15 @@ const startFFmpegWithS3Upload = ({
 };
 
 // =====================================================
-// HELPER: GET SERVER IP
-// =====================================================
-const getServerIp = () => {
-  // Default IP अगर environment variable सेट नहीं है
-  return process.env.SERVER_IP || "127.0.0.1";
-};
-
-// =====================================================
 // MAIN ENTRY: START LIVE RECORDING
 // =====================================================
 export const startLiveRecording = async ({ state, router, sessionId }) => {
   console.log("🎬 START LIVE RECORDING:", sessionId);
+
+  // 🔐 Guard: prevent double recording
+  if (state.recording?.active) {
+    throw new Error("Recording already active for this session");
+  }
 
   if (!state.recording) {
     state.recording = {
@@ -189,11 +195,11 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
   const AUDIO_BASE_PORT = 6000;
 
   // ================= SERVER IP =================
-  const serverIp = process.env.SERVER_IP;
+  const serverIp = process.env.SERVER_IP || "127.0.0.1";
 
   // ================= VIDEO TRANSPORT =================
   const videoTransport = await router.createPlainTransport({
-    listenIp: { 
+    listenIp: {
       ip: "0.0.0.0",
       announcedIp: serverIp
     },
@@ -227,7 +233,7 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
       const port = AUDIO_BASE_PORT + index * 2;
 
       const audioTransport = await router.createPlainTransport({
-        listenIp: { 
+        listenIp: {
           ip: "0.0.0.0",
           announcedIp: serverIp
         },
@@ -260,11 +266,8 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
   const base = path.join(TMP_DIR, `session-${sessionId}`);
 
   const videoSdp = `${base}-video.sdp`;
-  const audioSdps = audioConsumers.map(
-    (_, i) => `${base}-audio-${i}.sdp`
-  );
+  const audioSdps = audioConsumers.map((_, i) => `${base}-audio-${i}.sdp`);
 
-  // SDP files में भी server IP का उपयोग करें
   saveSDPFile(
     videoSdp,
     generateSDP({
@@ -288,6 +291,9 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
   });
 
   // ================= START FFMPEG =================
+  state.recording.startTime = new Date();
+  state.recording.active = true;
+
   const recordingPromise = startFFmpegWithS3Upload({
     videoSdp,
     audioSdps,
@@ -296,17 +302,15 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
   });
 
   // ================= STATE UPDATE =================
-  state.recording.active = true;
-  state.recording.startTime = new Date();
   state.recording.videoTransport = videoTransport;
   state.recording.audioTransports = audioTransports;
   state.recording.videoConsumer = videoConsumer;
   state.recording.audioConsumers = audioConsumers.map((a) => a.consumer);
   state.recording.recordingPromise = recordingPromise;
 
-  console.log("✅ Recording started");
-  console.log("📡 Server IP configured:", serverIp);
-  console.log("🔊 Audio consumers:", audioConsumers.length);
+  console.log("✅ Recording started successfully");
+  console.log("📡 Server IP:", serverIp);
+  console.log("🔊 Audio streams:", audioConsumers.length);
 
   return state.recording;
 };

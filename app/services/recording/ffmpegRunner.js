@@ -1,4 +1,4 @@
-//ffmpegRunner.js
+// services/recording/ffmpegRunner.js
 import { spawn } from "child_process";
 
 export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
@@ -9,12 +9,13 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     "-loglevel", "warning",
     "-stats",
 
-    // ================= RTP / LOW LATENCY FIXES =================
-    "-fflags", "nobuffer",
-    "-flags", "low_delay",
-    "-max_delay", "500000",          // 0.5 sec
-    "-rw_timeout", "5000000",        // 5 sec read/write timeout
+    // ================= TIMESTAMP & SYNC FIXES =================
+    "-fflags", "+genpts",                     // 🔥 Generate missing timestamps
     "-use_wallclock_as_timestamps", "1",
+    "-vsync", "cfr",                          // 🔥 Constant frame rate
+    "-async", "1",                            // 🔥 Audio sync fix
+    "-max_delay", "2000000",                  // 🔥 Allow buffering (2s)
+    "-rw_timeout", "5000000",
 
     "-analyzeduration", "10000000",
     "-probesize", "10000000",
@@ -36,7 +37,9 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   if (audioSdps.length > 0) {
     args.push(
       "-filter_complex",
-      `${audioSdps.map((_, i) => `[${i + 1}:a]`).join("")}amix=inputs=${audioSdps.length}:dropout_transition=0[a]`,
+      `${audioSdps
+        .map((_, i) => `[${i + 1}:a]`)
+        .join("")}amix=inputs=${audioSdps.length}:dropout_transition=2:normalize=0,aresample=async=1:first_pts=0[a]`,
       "-map", "0:v",
       "-map", "[a]"
     );
@@ -58,11 +61,11 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     // Audio
     "-c:a", "aac",
     "-b:a", "128k",
-    "-ar", "44100",
+    "-ar", "48000",
     "-ac", "2",
 
-    // MP4 flags
-    "-movflags", "+faststart+empty_moov",
+    // MP4 flags (RECORDING SAFE)
+    "-movflags", "+faststart",
     "-f", "mp4",
 
     output
@@ -101,7 +104,7 @@ export const waitForFFmpegExit = (ffmpegProcess, timeoutMs = 10000) => {
       settled = true;
       console.warn("⚠️ FFmpeg exit timeout, force killing...");
       ffmpegProcess.kill("SIGKILL");
-      resolve(); // ✅ IMPORTANT: do NOT reject (file still usable)
+      resolve();
     }, timeoutMs);
 
     ffmpegProcess.once("close", (code, signal) => {
@@ -122,7 +125,7 @@ export const waitForFFmpegExit = (ffmpegProcess, timeoutMs = 10000) => {
 };
 
 // =================================================
-// SAFE KILL (USED BY CONTROLLER)
+// SAFE KILL
 // =================================================
 export const killFFmpegProcess = (ffmpegProcess) => {
   if (!ffmpegProcess || ffmpegProcess.killed) return true;

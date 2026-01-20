@@ -1,3 +1,4 @@
+// controller/common/file.controller.js
 import mongoose from "mongoose";
 import HttpStatus from "http-status-codes";
 import { v4 as uuidv4 } from "uuid";
@@ -6,37 +7,33 @@ import whiteBoardModel from "../../model/whiteBoards/whiteBoard.model.js";
 import { startLiveRecording } from "../../services/recording/liveSessionRecording.service.js";
 import { sendSuccessResponse, sendErrorResponse } from "../../responses/responses.js";
 import { errorEn, successEn } from "../../responses/message.js";
-import { getIO } from "../../services/socket.integrated.js"; 
+import { getIO } from "../../services/socket.integrated.js";
 import { ROLE_MAP } from "../../constant/role.js";
 import { roomState } from "../../services/socketState/roomState.js";
-import { uploadSessionRecording } from "../../middleware/aws.s3.js";
-import fs from "fs"; 
-import path from "path";
-import os from "os";
-import {
-  waitForFFmpegExit
-} from "../../services/recording/ffmpegRunner.js";
+import { waitForFFmpegExit } from "../../services/recording/ffmpegRunner.js";
 
-/**
- * Start Live Session
- */
-// 🔹 Helper: secure random alphanumeric roomCode
-/** Helper: Generate secure 6-char roomCode */
+// =====================================================
+// HELPERS
+// =====================================================
 const generateRoomCode = () => {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  return Array.from({ length: 6 }, () =>
+    chars[Math.floor(Math.random() * chars.length)]
+  ).join("");
 };
 
-/** Schedule session auto-end */
 const scheduleSessionAutoEnd = (sessionId, endTime) => {
   if (!endTime) return;
   const delay = new Date(endTime).getTime() - Date.now();
   if (delay <= 0) return;
 
   setTimeout(async () => {
-    try {
+    try {``
       const io = getIO();
-      const session = await liveSessionModel.findOne({ _id: sessionId, status: "ACTIVE" });
+      const session = await liveSessionModel.findOne({
+        _id: sessionId,
+        status: "ACTIVE"
+      });
       if (!session) return;
 
       session.status = "ENDED";
@@ -44,7 +41,10 @@ const scheduleSessionAutoEnd = (sessionId, endTime) => {
       await session.save();
 
       if (session.whiteboardId) {
-        await whiteBoardModel.findByIdAndUpdate(session.whiteboardId, { $set: { status: "CLOSED" } });
+        await whiteBoardModel.findByIdAndUpdate(
+          session.whiteboardId,
+          { $set: { status: "CLOSED" } }
+        );
       }
 
       io.to(session.sessionId).emit("session_ended", {
@@ -59,41 +59,41 @@ const scheduleSessionAutoEnd = (sessionId, endTime) => {
   }, delay);
 };
 
-/** Start Live Session */
+// =====================================================
+// START LIVE SESSION
+// =====================================================
 export const startLiveSession = async (req, res) => {
   try {
-    const io = getIO(); 
-    const { title, description, endTime, maxParticipants, isPrivate, courseId } = req.body;
+    const io = getIO();
+    const { title, description, endTime, maxParticipants, isPrivate, courseId } =
+      req.body;
     const mentorId = req.tokenData?.userId;
 
     if (!mentorId || !title) {
-      return sendErrorResponse(res, errorEn.ALL_FIELDS_REQUIRED, HttpStatus.BAD_REQUEST);
+      return sendErrorResponse(
+        res,
+        errorEn.ALL_FIELDS_REQUIRED,
+        HttpStatus.BAD_REQUEST
+      );
     }
 
-    // 🔹 SIMPLE VERSION: Bas course existence check karen
     if (courseId) {
       const course = await mongoose.model("Course").findById(courseId);
       if (!course) {
         return sendErrorResponse(res, "Course not found", HttpStatus.NOT_FOUND);
       }
-      // 🔹 Ownership check REMOVE kiya - koi bhi mentor kisi bhi course ke liye session bana sakta hai
     }
 
     const roomCode = generateRoomCode();
-    const existingSession = await liveSessionModel.findOne({ roomCode, status: "ACTIVE" });
-    if (existingSession) {
-      return sendErrorResponse(res, errorEn.LIVE_SESSION_ALREADY_EXISTS, HttpStatus.CONFLICT);
-    }
-
     const sessionId = uuidv4();
-    const joinLink = `${process.env.FRONTEND_URL}/live/${roomCode}`; // ✅ Join link generate
-    
+    const joinLink = `${process.env.FRONTEND_URL}/live/${roomCode}`;
+
     const liveSession = await liveSessionModel.create({
       streamerId: mentorId,
       streamerRole: ROLE_MAP.STREAMER,
       sessionId,
       roomCode,
-      joinLink, // ✅ Join link save
+      joinLink,
       title,
       description: description || "",
       courseId: courseId || null,
@@ -102,21 +102,12 @@ export const startLiveSession = async (req, res) => {
       participants: [],
       allowedUsers: [],
       chatMessages: [],
-      recordingUrl: [], // ✅ Now an empty array instead of string
+      recordingUrl: [],
       maxParticipants: maxParticipants || 100,
       isPrivate: isPrivate || false,
       status: "ACTIVE",
       totalActiveDuration: 0
     });
-
-    // 🔹 Course mein bhi live session add karen (if courseId provided)
-    if (courseId) {
-      await mongoose.model("Course").findByIdAndUpdate(
-        courseId,
-        { $push: { liveSessions: liveSession._id } },
-        { new: true }
-      );
-    }
 
     const whiteboard = await whiteBoardModel.create({
       whiteboardId: uuidv4(),
@@ -125,13 +116,15 @@ export const startLiveSession = async (req, res) => {
       createdBy: mentorId,
       createdByRole: ROLE_MAP.STREAMER,
       liveSessionId: liveSession._id,
-      participants: [{
-        user: mentorId,
-        role: "owner",
-        joinedAt: new Date(),
-        lastActive: new Date(),
-        cursorPosition: {}
-      }]
+      participants: [
+        {
+          user: mentorId,
+          role: "owner",
+          joinedAt: new Date(),
+          lastActive: new Date(),
+          cursorPosition: {}
+        }
+      ]
     });
 
     liveSession.whiteboardId = whiteboard._id;
@@ -147,24 +140,39 @@ export const startLiveSession = async (req, res) => {
       courseId: courseId || null,
       maxParticipants,
       whiteboardId: whiteboard._id,
-      joinLink // ✅ Join link emit
+      joinLink
     });
 
-    return sendSuccessResponse(res, liveSession, successEn.LIVE_SESSION_CREATED, HttpStatus.CREATED);
-
+    return sendSuccessResponse(
+      res,
+      liveSession,
+      successEn.LIVE_SESSION_CREATED,
+      HttpStatus.CREATED
+    );
   } catch (error) {
     console.error("Start LiveSession Error:", error.message);
-    return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+    return sendErrorResponse(
+      res,
+      errorEn.INTERNAL_SERVER_ERROR,
+      HttpStatus.INTERNAL_SERVER_ERROR
+    );
   }
 };
 
+// =====================================================
+// START RECORDING
+// =====================================================
 export const startLiveSessionRecording = async (req, res) => {
   try {
     const { sessionId } = req.params;
     const userId = req.tokenData?.userId;
 
     if (!sessionId) {
-      return sendErrorResponse(res, "SessionId is required", HttpStatus.BAD_REQUEST);
+      return sendErrorResponse(
+        res,
+        "SessionId is required",
+        HttpStatus.BAD_REQUEST
+      );
     }
 
     const state = roomState.get(sessionId);
@@ -176,12 +184,10 @@ export const startLiveSessionRecording = async (req, res) => {
       );
     }
 
-    // 🔐 Optional: only streamer can start recording
     if (state.createdBy?.toString() !== userId) {
       return sendErrorResponse(res, "Unauthorized", HttpStatus.UNAUTHORIZED);
     }
 
-    // 🔥 GUARD: prevent double recording
     if (state.recording?.active) {
       return sendErrorResponse(
         res,
@@ -190,86 +196,26 @@ export const startLiveSessionRecording = async (req, res) => {
       );
     }
 
-    // ✅ CRITICAL: Directly set recording state
-    if (!state.recording) {
-      state.recording = {
-        active: false,
-        videoTransport: null,
-        audioTransports: [],
-        videoConsumer: null,
-        audioConsumers: [],
-        recordingPromise: null,
-        startTime: null,
-        ffmpegProcess: null,
-        filePath: null
-      };
-    }
+    console.log("🎬 Starting live session recording...");
 
-    console.log("🎬 Starting recording...");
-    
-    // ✅ FORCE SET ACTIVE AND START TIME IMMEDIATELY
-    state.recording.active = true;
-    state.recording.startTime = new Date();
-    
-    console.log("✅ Recording marked as active, startTime:", state.recording.startTime);
+    const recordingState = await startLiveRecording({
+      state,
+      router: state.router,
+      sessionId
+    });
 
-    // Try to start the actual recording
-    try {
-      const recording = await startLiveRecording({
-        state,
-        router: state.router,
+    return sendSuccessResponse(
+      res,
+      {
         sessionId,
-      });
-
-      console.log("✅ startLiveRecording completed");
-      
-      // Double check recording is active
-      if (state.recording) {
-        state.recording.active = true;
-        if (!state.recording.startTime) {
-          state.recording.startTime = new Date();
-        }
-      }
-
-      return sendSuccessResponse(
-        res,
-        {
-          sessionId,
-          startTime: state.recording.startTime,
-          active: state.recording.active,
-          message: "Live session recording started successfully"
-        },
-        "Live session recording started successfully",
-        HttpStatus.OK
-      );
-
-    } catch (recordingError) {
-      console.error("❌ Error in startLiveRecording:", recordingError.message);
-      
-      // Still mark as active for testing
-      if (state.recording) {
-        state.recording.active = true;
-        state.recording.startTime = new Date();
-        
-        return sendSuccessResponse(
-          res,
-          {
-            sessionId,
-            startTime: state.recording.startTime,
-            active: state.recording.active,
-            message: "Recording started (simulated)"
-          },
-          "Recording started",
-          HttpStatus.OK
-        );
-      }
-      
-      throw recordingError;
-    }
-
+        startTime: recordingState.startTime,
+        active: recordingState.active
+      },
+      "Live session recording started successfully",
+      HttpStatus.OK
+    );
   } catch (error) {
     console.error("🔥 startLiveSessionRecording error:", error.message);
-    console.error("Stack trace:", error.stack);
     return sendErrorResponse(
       res,
       `Failed to start recording: ${error.message}`,
@@ -278,38 +224,45 @@ export const startLiveSessionRecording = async (req, res) => {
   }
 };
 
+// =====================================================
+// STOP RECORDING
+// =====================================================
 export const stopLiveSessionRecording = async (req, res) => {
   try {
-    console.log("🛑 STOP LIVE SESSION RECORDING");
-
     const { sessionId } = req.params;
     const state = roomState.get(sessionId);
 
     if (!state?.recording?.ffmpegProcess) {
-      return res.status(400).json({
-        success: false,
-        message: "No active recording found"
-      });
+      return sendErrorResponse(
+        res,
+        "No active recording found",
+        HttpStatus.BAD_REQUEST
+      );
     }
 
     const recording = state.recording;
 
-    // 1️⃣ Stop FFmpeg
+    console.log("🛑 Stopping live recording...");
+
+    // 1️⃣ Stop FFmpeg gracefully
     try {
-      console.log("🎬 Sending SIGINT to FFmpeg...");
       recording.ffmpegProcess.kill("SIGINT");
+      await waitForFFmpegExit(recording.ffmpegProcess);
     } catch {}
 
     // 2️⃣ Close mediasoup resources
     try { recording.videoConsumer?.close(); } catch {}
-    recording.audioConsumers?.forEach(c => { try { c.close(); } catch {} });
+    recording.audioConsumers?.forEach((c) => {
+      try { c.close(); } catch {}
+    });
     try { recording.videoTransport?.close(); } catch {}
-    recording.audioTransports?.forEach(t => { try { t.close(); } catch {} });
+    recording.audioTransports?.forEach((t) => {
+      try { t.close(); } catch {}
+    });
 
     // 3️⃣ Wait for upload result
     let uploadResult = null;
     if (recording.recordingPromise) {
-      console.log("⏳ Waiting for FFmpeg flush + S3 upload...");
       uploadResult = await recording.recordingPromise;
     }
 
@@ -321,34 +274,33 @@ export const stopLiveSessionRecording = async (req, res) => {
       videoConsumer: null,
       audioConsumers: [],
       recordingPromise: null,
-      startTime: recording.startTime,
+      startTime: null,
       ffmpegProcess: null,
       filePath: null
     };
 
-    return res.status(200).json({
-      success: true,
-      message: uploadResult?.success
-        ? "Recording stopped and saved successfully"
-        : "Recording stopped but upload failed",
-      data: {
+    return sendSuccessResponse(
+      res,
+      {
         sessionId,
         recordingUrl: uploadResult?.fileUrl || null,
         fileName: uploadResult?.fileName || null,
-        reason: uploadResult?.reason || null,
-        startedAt: recording.startTime
-      }
-    });
-
+        duration: uploadResult?.duration || 0
+      },
+      uploadResult?.success
+        ? "Recording stopped and saved successfully"
+        : "Recording stopped but upload failed",
+      HttpStatus.OK
+    );
   } catch (error) {
     console.error("🔥 stopLiveSessionRecording error:", error.message);
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    return sendErrorResponse(
+      res,
+      error.message,
+      HttpStatus.INTERNAL_SERVER_ERROR
+    );
   }
 };
-
 
 
 
