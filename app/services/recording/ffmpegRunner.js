@@ -51,32 +51,32 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   }
 
   // ================= OUTPUT SETTINGS =================
-  args.push(
-    "-fps_mode", "vfr",
+args.push(
+  "-fps_mode", "vfr",
 
-    // Video
-    "-c:v", "libx264",
-    "-preset", "veryfast",
-    "-pix_fmt", "yuv420p",
-    "-profile:v", "main",
-    "-r", "30",
-    "-g", "60",
-    "-maxrate", "2500k",
-    "-bufsize", "5000k",
-    "-force_key_frames", "expr:gte(t,n_forced*2)",
-    "-crf", "23",
+  // Video
+  "-c:v", "libx264",
+  "-preset", "veryfast",
+  "-pix_fmt", "yuv420p",
+  "-profile:v", "main",
+  "-g", "60",
+  "-maxrate", "2500k",
+  "-bufsize", "5000k",
+  "-force_key_frames", "expr:gte(t,n_forced*2)",
+  "-crf", "23",
 
-    // Audio
-    "-c:a", "aac",
-    "-b:a", "128k",
-    "-ar", "48000",
-    "-ac", "2",
+  // Audio
+  "-c:a", "aac",
+  "-b:a", "128k",
+  "-ar", "48000",
+  "-ac", "2",
 
-    // MP4
-    "-movflags", "+faststart",
-    "-f", "mp4",
-    output
-  );
+  // MP4
+  "-movflags", "+faststart",
+  "-f", "mp4",
+  output
+);
+
 
   console.log("🎬 FFmpeg command:\nffmpeg", args.join(" "));
 
