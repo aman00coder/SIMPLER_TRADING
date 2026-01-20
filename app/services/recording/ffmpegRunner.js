@@ -12,8 +12,10 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     "-loglevel", "warning",
     "-stats",
 
-    // ================= RTP INPUT STABILITY (FIXED) =================
+    // ================= RTP INPUT STABILITY =================
     "-fflags", "+genpts+igndts",
+    "-flags", "low_delay",
+    "-use_wallclock_as_timestamps", "1",
     "-reorder_queue_size", "5000",
     "-rtbufsize", "300M",
     "-max_delay", "10000000",
@@ -50,7 +52,6 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
 
   // ================= OUTPUT SETTINGS =================
   args.push(
-    // IMPORTANT: CFR REMOVED
     "-fps_mode", "vfr",
 
     // Video
