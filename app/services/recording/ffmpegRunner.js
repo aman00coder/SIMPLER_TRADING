@@ -52,7 +52,7 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
 
   // ================= OUTPUT SETTINGS =================
 args.push(
-  // Video
+// ❗❗ VIDEO (FINAL)
 "-fps_mode", "vfr",
 "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,fps=25",
 "-c:v", "libx264",
@@ -63,6 +63,7 @@ args.push(
 "-maxrate", "2500k",
 "-bufsize", "5000k",
 "-crf", "23",
+
 
 
 
