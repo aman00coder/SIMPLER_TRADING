@@ -2,20 +2,33 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
-import fetch from "node-fetch";
 
 import { generateSDP, saveSDPFile } from "./sdpGenerator.js";
 import { startFFmpeg } from "./ffmpegRunner.js";
-import { generatePresignedUrl } from "../../middleware/aws.s3.js";
 
 const waitForVideoProducer = async (state, timeout = 10000) => {
   const start = Date.now();
   while (Date.now() - start < timeout) {
-    const producer = [...state.producers.values()].find(p => p.kind === "video");
+    const producer = [...state.producers.values()].find(
+      p => p.kind === "video" && !p.closed
+    );
     if (producer) return producer;
     await new Promise(r => setTimeout(r, 200));
   }
   throw new Error("Video producer not found");
+};
+
+const requestKeyframeWithRetry = async (producer, retries = 5) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      await producer.requestKeyFrame();
+      console.log(`🎯 Keyframe requested (attempt ${i + 1})`);
+      return true;
+    } catch (err) {
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+  return false;
 };
 
 export const startLiveRecording = async ({ state, router, sessionId }) => {
@@ -24,17 +37,7 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
   }
 
   if (!state.recording) {
-    state.recording = {
-      active: false,
-      videoTransport: null,
-      audioTransports: [],
-      videoConsumer: null,
-      audioConsumers: [],
-      recordingPromise: null,
-      startTime: null,
-      ffmpegProcess: null,
-      filePath: null
-    };
+    state.recording = {};
   }
 
   const VIDEO_PORT = 5004;
@@ -44,14 +47,18 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
 
   const videoProducer = await waitForVideoProducer(state);
 
-  // 🔥🔥 MAIN FIX: force keyframe BEFORE recording
-  try {
-    videoProducer.requestKeyFrame();
-    console.log("🎯 Keyframe requested from video producer");
-  } catch {
-    console.warn("⚠️ Failed to request keyframe");
+  // ⚠️ Viewer-less warning (important for stability)
+  if (!state.viewers || state.viewers.size === 0) {
+    console.warn("⚠️ No viewers connected. Recording may be unstable.");
   }
 
+  // 🔥 KEYFRAME GUARANTEE
+  const keyframeOk = await requestKeyframeWithRetry(videoProducer);
+  if (!keyframeOk) {
+    throw new Error("Keyframe not received. Cannot start recording safely.");
+  }
+
+  // ---------------- VIDEO TRANSPORT ----------------
   const videoTransport = await router.createPlainTransport({
     listenIp: { ip: "0.0.0.0", announcedIp: serverIp },
     rtcpMux: false,
@@ -67,17 +74,18 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
   const videoConsumer = await videoTransport.consume({
     producerId: videoProducer.id,
     rtpCapabilities: router.rtpCapabilities,
-    paused: false
+    paused: true
   });
 
   await videoConsumer.resume();
 
+  // ---------------- AUDIO TRANSPORTS ----------------
   const audioConsumers = [];
   const audioTransports = [];
   let index = 0;
 
   for (const producer of state.producers.values()) {
-    if (producer.kind === "audio") {
+    if (producer.kind === "audio" && !producer.closed) {
       const port = AUDIO_BASE_PORT + index * 2;
 
       const audioTransport = await router.createPlainTransport({
@@ -95,7 +103,7 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
       const consumer = await audioTransport.consume({
         producerId: producer.id,
         rtpCapabilities: router.rtpCapabilities,
-        paused: false
+        paused: true
       });
 
       await consumer.resume();
@@ -106,7 +114,13 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     }
   }
 
+  // ⏳ IMPORTANT: RTP warm-up delay
+  await new Promise(r => setTimeout(r, 2000));
+
+  // ---------------- SDP GENERATION ----------------
   const TMP_DIR = path.join(os.tmpdir(), "live-recordings");
+  fs.mkdirSync(TMP_DIR, { recursive: true });
+
   const base = path.join(TMP_DIR, `session-${sessionId}`);
   const videoSdp = `${base}-video.sdp`;
   const audioSdps = audioConsumers.map((_, i) => `${base}-audio-${i}.sdp`);
@@ -133,17 +147,26 @@ export const startLiveRecording = async ({ state, router, sessionId }) => {
     );
   });
 
-  state.recording.startTime = new Date();
-  state.recording.active = true;
+  // ---------------- START FFMPEG ----------------
+  const outputFile = path.join(
+    TMP_DIR,
+    `recording_${sessionId}_${Date.now()}.mp4`
+  );
 
-  state.recording.recordingPromise = startFFmpeg({
-    videoSdp,
-    audioSdps,
-    output: path.join(
-      TMP_DIR,
-      `recording_${sessionId}_${Date.now()}.mp4`
-    )
-  });
+  state.recording = {
+    active: true,
+    startTime: Date.now(),
+    videoTransport,
+    audioTransports,
+    videoConsumer,
+    audioConsumers,
+    filePath: outputFile,
+    ffmpegProcess: startFFmpeg({
+      videoSdp,
+      audioSdps,
+      output: outputFile
+    })
+  };
 
   return state.recording;
 };
