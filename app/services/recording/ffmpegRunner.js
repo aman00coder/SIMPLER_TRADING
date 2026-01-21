@@ -118,3 +118,34 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
 
   return ffmpeg;
 };
+
+export const waitForFFmpegExit = (ffmpegProcess, timeoutMs = 20000) => {
+  return new Promise((resolve) => {
+    let finished = false;
+
+    const timeout = setTimeout(() => {
+      if (finished) return;
+      finished = true;
+      console.warn("⚠️ FFmpeg exit timeout, force killing...");
+      try {
+        ffmpegProcess.kill("SIGKILL");
+      } catch {}
+      resolve();
+    }, timeoutMs);
+
+    ffmpegProcess.once("close", (code, signal) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      console.log(`🎬 FFmpeg closed - code=${code}, signal=${signal}`);
+      resolve();
+    });
+
+    ffmpegProcess.once("error", () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
+};
