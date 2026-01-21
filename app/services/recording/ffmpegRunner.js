@@ -1,7 +1,7 @@
 import { spawn } from "child_process";
 
 // =================================================
-// START FFMPEG (VIDEO + N AUDIO MIX)
+// START FFMPEG (VIDEO + N AUDIO MIX) – STABLE VERSION
 // =================================================
 export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   const args = [
@@ -11,48 +11,44 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     "-loglevel", "warning",
     "-stats",
 
-    // ---------- RTP STABILITY ----------
-    "-fflags", "+genpts+igndts",
-    "-flags", "low_delay",
+    // ---------- RTP / LIVE STABILITY ----------
+    "-fflags", "+genpts+discardcorrupt",
     "-use_wallclock_as_timestamps", "1",
-    "-reorder_queue_size", "5000",
+    "-thread_queue_size", "4096",
     "-rtbufsize", "300M",
     "-max_delay", "10000000",
-    "-rw_timeout", "10000000",
     "-analyzeduration", "15000000",
     "-probesize", "15000000",
 
-    // ---------- VIDEO INPUT (index 0) ----------
+    // ---------- VIDEO INPUT ----------
     "-protocol_whitelist", "file,udp,rtp,pipe",
     "-i", videoSdp
   ];
 
-  // ---------- AUDIO INPUTS (index 1..N) ----------
+  // ---------- AUDIO INPUTS ----------
   audioSdps.forEach((sdp) => {
     args.push(
+      "-thread_queue_size", "4096",
       "-protocol_whitelist", "file,udp,rtp,pipe",
       "-i", sdp
     );
   });
 
   // =================================================
-  // FILTER COMPLEX (VIDEO + DYNAMIC AUDIO MIX)
+  // FILTER COMPLEX
   // =================================================
   const audioCount = audioSdps.length;
-
   let filterComplex = "";
 
-  // 🎥 VIDEO FILTER (ALWAYS)
+  // 🎥 VIDEO FILTER (FORCED CFR)
   filterComplex +=
     "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,fps=25[v];";
 
-  // 🎤 AUDIO FILTER (DYNAMIC)
+  // 🎤 AUDIO FILTER
   if (audioCount === 1) {
-    // single audio → no amix
     filterComplex +=
       "[1:a]aresample=async=1:first_pts=0[a]";
   } else if (audioCount > 1) {
-    // multiple audio → amix
     const audioInputs = audioSdps
       .map((_, i) => `[${i + 1}:a]`)
       .join("");
@@ -71,10 +67,12 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   );
 
   // =================================================
-  // OUTPUT SETTINGS
+  // OUTPUT SETTINGS (CFR, STABLE MP4)
   // =================================================
   args.push(
-    "-fps_mode", "vfr",
+    // Force CFR (IMPORTANT)
+    "-r", "25",
+    "-fps_mode", "cfr",
 
     // Video
     "-c:v", "libx264",
@@ -82,9 +80,9 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     "-pix_fmt", "yuv420p",
     "-profile:v", "main",
     "-g", "50",
+    "-crf", "23",
     "-maxrate", "2500k",
     "-bufsize", "5000k",
-    "-crf", "23",
 
     // Audio
     "-c:a", "aac",
@@ -117,9 +115,9 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
 };
 
 // =================================================
-// WAIT FOR FFMPEG EXIT (FIXES YOUR IMPORT ERROR)
+// WAIT FOR FFMPEG EXIT (SAFE)
 // =================================================
-export const waitForFFmpegExit = (ffmpegProcess, timeoutMs = 15000) => {
+export const waitForFFmpegExit = (ffmpegProcess, timeoutMs = 20000) => {
   return new Promise((resolve) => {
     let finished = false;
 
@@ -151,7 +149,7 @@ export const waitForFFmpegExit = (ffmpegProcess, timeoutMs = 15000) => {
 };
 
 // =================================================
-// SAFE KILL (OPTIONAL)
+// SAFE KILL
 // =================================================
 export const killFFmpegProcess = (ffmpegProcess) => {
   if (!ffmpegProcess || ffmpegProcess.killed) return true;
