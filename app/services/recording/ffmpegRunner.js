@@ -1,7 +1,7 @@
 import { spawn } from "child_process";
 
 // =================================================
-// START FFMPEG (VIDEO + N AUDIO MIX) – STABLE VERSION
+// START FFMPEG (VIDEO + N AUDIO MIX) – FINAL STABLE
 // =================================================
 export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   const args = [
@@ -35,27 +35,34 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   });
 
   // =================================================
-  // FILTER COMPLEX
+  // FILTER COMPLEX (TIMESTAMP SAFE)
   // =================================================
   const audioCount = audioSdps.length;
   let filterComplex = "";
 
-  // 🎥 VIDEO FILTER (FORCED CFR)
+  // 🎥 VIDEO — FORCE CLEAN CFR + RESET PTS
   filterComplex +=
-    "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,fps=25[v];";
+    "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease," +
+    "fps=25,setpts=N/25/TB[v];";
 
-  // 🎤 AUDIO FILTER
+  // 🎤 AUDIO — HARD PTS RESET (CRITICAL FIX)
   if (audioCount === 1) {
     filterComplex +=
-      "[1:a]aresample=async=1:first_pts=0[a]";
+      "[1:a]asetpts=N/SR/TB," +
+      "aresample=async=1000:min_hard_comp=0.1:first_pts=0[a]";
   } else if (audioCount > 1) {
+    const audioReset = audioSdps
+      .map((_, i) => `[${i + 1}:a]asetpts=N/SR/TB`)
+      .join(";");
+
     const audioInputs = audioSdps
       .map((_, i) => `[${i + 1}:a]`)
       .join("");
 
     filterComplex +=
+      `${audioReset};` +
       `${audioInputs}amix=inputs=${audioCount}:dropout_transition=2,` +
-      `aresample=async=1:first_pts=0[a]`;
+      `aresample=async=1000:min_hard_comp=0.1:first_pts=0[a]`;
   } else {
     throw new Error("No audio inputs provided");
   }
@@ -67,10 +74,9 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   );
 
   // =================================================
-  // OUTPUT SETTINGS (CFR, STABLE MP4)
+  // OUTPUT SETTINGS (MP4 SAFE MODE)
   // =================================================
   args.push(
-    // Force CFR (IMPORTANT)
     "-r", "25",
     "-fps_mode", "cfr",
 
@@ -90,8 +96,10 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     "-ar", "48000",
     "-ac", "2",
 
-    // MP4
-    "-movflags", "+faststart",
+    // MP4 TIMESTAMP SAFETY
+    "-movflags", "+faststart+frag_keyframe+empty_moov",
+    "-avoid_negative_ts", "make_zero",
+
     "-f", "mp4",
     output
   );
