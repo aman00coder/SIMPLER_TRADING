@@ -1,70 +1,45 @@
 import { spawn } from "child_process";
 
 // =================================================
-// START FFMPEG (FINAL PRODUCTION SAFE)
+// START FFMPEG (REAL PRODUCTION SAFE – RECORDING)
 // =================================================
 export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   const args = [
     "-y",
 
-    // ---------- LOGGING ----------
+    // LOGGING
     "-loglevel", "warning",
     "-stats",
 
-    // ---------- LIVE / RTP SAFE ----------
-    "-fflags", "+genpts+discardcorrupt+nobuffer",
-    "-flags", "low_delay",
+    // RECORDING SAFE FLAGS (NO LOW LATENCY)
+    "-fflags", "+genpts+discardcorrupt",
     "-use_wallclock_as_timestamps", "1",
-    "-thread_queue_size", "4096",
-    "-rtbufsize", "300M",
-    "-max_delay", "5000000",
-    "-analyzeduration", "10000000",
-    "-probesize", "10000000",
+    "-thread_queue_size", "8192",
+    "-rtbufsize", "500M",
+    "-max_delay", "15000000",
+    "-analyzeduration", "30000000",
+    "-probesize", "30000000",
 
-    // ---------- VIDEO INPUT ----------
+    // VIDEO INPUT
     "-protocol_whitelist", "file,udp,rtp,pipe",
     "-i", videoSdp
   ];
 
-  // ---------- AUDIO INPUTS ----------
+  // AUDIO INPUTS
   audioSdps.forEach((sdp) => {
     args.push(
-      "-thread_queue_size", "4096",
+      "-thread_queue_size", "8192",
       "-protocol_whitelist", "file,udp,rtp,pipe",
       "-i", sdp
     );
   });
 
-  // =================================================
-  // FILTER COMPLEX (TIMESTAMP SAFE)
-  // =================================================
-  const audioCount = audioSdps.length;
-  let filterComplex = "";
-
-  // VIDEO
-  filterComplex +=
+  // ================= FILTER COMPLEX =================
+  let filterComplex =
     "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease," +
-    "fps=25,setpts=N/25/TB[v];";
-
-  // AUDIO
-  if (audioCount === 1) {
-    filterComplex +=
-      "[1:a]asetpts=N/SR/TB," +
-      "aresample=async=1000:min_hard_comp=0.1:first_pts=0[a]";
-  } else {
-    const audioReset = audioSdps
-      .map((_, i) => `[${i + 1}:a]asetpts=N/SR/TB`)
-      .join(";");
-
-    const audioInputs = audioSdps
-      .map((_, i) => `[${i + 1}:a]`)
-      .join("");
-
-    filterComplex +=
-      `${audioReset};` +
-      `${audioInputs}amix=inputs=${audioCount}:dropout_transition=2,` +
-      `aresample=async=1000:min_hard_comp=0.1:first_pts=0[a]`;
-  }
+    "fps=25,setpts=N/25/TB[v];" +
+    "[1:a]asetpts=N/SR/TB," +
+    "aresample=async=1000:first_pts=0[a]";
 
   args.push(
     "-filter_complex", filterComplex,
@@ -72,15 +47,13 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     "-map", "[a]"
   );
 
-  // =================================================
-  // OUTPUT SETTINGS
-  // =================================================
+  // ================= OUTPUT =================
   args.push(
-    "-vsync", "1",
+    // CFR ONLY (NO VSYNC)
     "-r", "25",
     "-fps_mode", "cfr",
 
-    // Video
+    // VIDEO
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-pix_fmt", "yuv420p",
@@ -91,13 +64,13 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     "-maxrate", "2500k",
     "-bufsize", "5000k",
 
-    // Audio
+    // AUDIO
     "-c:a", "aac",
     "-b:a", "128k",
     "-ar", "48000",
     "-ac", "2",
 
-    // MP4 SAFE
+    // MP4 SAFETY
     "-movflags", "+faststart+frag_keyframe+empty_moov",
     "-avoid_negative_ts", "make_zero",
 
@@ -107,18 +80,14 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
 
   console.log("🎬 FFmpeg command:\nffmpeg", args.join(" "));
 
-  const ffmpeg = spawn("ffmpeg", args, {
+  return spawn("ffmpeg", args, {
     stdio: ["ignore", "pipe", "pipe"]
   });
-
-  ffmpeg.stderr.on("data", (data) => {
-    const line = data.toString().trim();
-    if (line) console.log("🎥 FFmpeg:", line);
-  });
-
-  return ffmpeg;
 };
 
+// =================================================
+// WAIT FOR FFMPEG EXIT
+// =================================================
 export const waitForFFmpegExit = (ffmpegProcess, timeoutMs = 20000) => {
   return new Promise((resolve) => {
     let finished = false;
@@ -126,7 +95,7 @@ export const waitForFFmpegExit = (ffmpegProcess, timeoutMs = 20000) => {
     const timeout = setTimeout(() => {
       if (finished) return;
       finished = true;
-      console.warn("⚠️ FFmpeg exit timeout, force killing...");
+      console.warn("⚠️ FFmpeg timeout, force killing...");
       try {
         ffmpegProcess.kill("SIGKILL");
       } catch {}
@@ -138,13 +107,6 @@ export const waitForFFmpegExit = (ffmpegProcess, timeoutMs = 20000) => {
       finished = true;
       clearTimeout(timeout);
       console.log(`🎬 FFmpeg closed - code=${code}, signal=${signal}`);
-      resolve();
-    });
-
-    ffmpegProcess.once("error", () => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timeout);
       resolve();
     });
   });
