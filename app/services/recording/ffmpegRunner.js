@@ -1,7 +1,7 @@
 import { spawn } from "child_process";
 
 // =================================================
-// START FFMPEG (KEYFRAME SAFE LIVE RECORDING)
+// START FFMPEG (FINAL PRODUCTION SAFE)
 // =================================================
 export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   const args = [
@@ -36,19 +36,35 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   });
 
   // =================================================
-  // FILTER COMPLEX
+  // FILTER COMPLEX (TIMESTAMP SAFE)
   // =================================================
+  const audioCount = audioSdps.length;
   let filterComplex = "";
 
-  // VIDEO — wait for keyframe + clean CFR
+  // VIDEO
   filterComplex +=
     "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease," +
     "fps=25,setpts=N/25/TB[v];";
 
-  // AUDIO — hard reset timestamps
-  filterComplex +=
-    "[1:a]asetpts=N/SR/TB," +
-    "aresample=async=1000:first_pts=0[a]";
+  // AUDIO
+  if (audioCount === 1) {
+    filterComplex +=
+      "[1:a]asetpts=N/SR/TB," +
+      "aresample=async=1000:min_hard_comp=0.1:first_pts=0[a]";
+  } else {
+    const audioReset = audioSdps
+      .map((_, i) => `[${i + 1}:a]asetpts=N/SR/TB`)
+      .join(";");
+
+    const audioInputs = audioSdps
+      .map((_, i) => `[${i + 1}:a]`)
+      .join("");
+
+    filterComplex +=
+      `${audioReset};` +
+      `${audioInputs}amix=inputs=${audioCount}:dropout_transition=2,` +
+      `aresample=async=1000:min_hard_comp=0.1:first_pts=0[a]`;
+  }
 
   args.push(
     "-filter_complex", filterComplex,
@@ -57,7 +73,7 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
   );
 
   // =================================================
-  // OUTPUT SETTINGS (KEYFRAME SAFE MP4)
+  // OUTPUT SETTINGS
   // =================================================
   args.push(
     "-vsync", "1",
@@ -72,6 +88,8 @@ export const startFFmpeg = ({ videoSdp, audioSdps, output }) => {
     "-g", "50",
     "-x264opts", "keyint=50:min-keyint=25:no-scenecut",
     "-crf", "23",
+    "-maxrate", "2500k",
+    "-bufsize", "5000k",
 
     // Audio
     "-c:a", "aac",
