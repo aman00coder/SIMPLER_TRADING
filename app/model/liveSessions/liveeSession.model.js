@@ -1,5 +1,4 @@
-
-//model/liveesession.model.js
+// model/liveSessions/liveeSession.model.js
 import mongoose from "mongoose";
 import { ROLE_MAP } from "../../constant/role.js";
 
@@ -13,7 +12,7 @@ const liveSessionSchema = new mongoose.Schema({
     courseId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: "Course",
-        required: false // initially optional, aap required bana sakte hain
+        required: false
     },
     streamerRole: {
         type: Number,
@@ -36,7 +35,7 @@ const liveSessionSchema = new mongoose.Schema({
     },
     description: String,
     
-    // ✅ ADDED: Join link field
+    // Join link field
     joinLink: {
         type: String
     },
@@ -60,23 +59,46 @@ const liveSessionSchema = new mongoose.Schema({
     whiteboardData: [{ type: Object }],
     whiteboardId: { type: mongoose.Schema.Types.ObjectId, ref: "Whiteboard" },
     chatMessages: [{ type: mongoose.Schema.Types.ObjectId, ref: "ChatMessage" }],
-// model/liveSessions/liveeSession.model.js में ये changes करें:
+
+    // 🔹 Recordings array - UPDATED
     recordingUrl: [
         {
-            fileUrl: String,
-            fileName: String,
+            fileUrl: {
+                type: String,
+                required: true
+            },
+            fileName: {
+                type: String,
+                required: true
+            },
             fileType: {
                 type: String,
                 default: "video/mp4"
+            },
+            fileSize: {
+                type: Number, // bytes mein
+                default: 0
             },
             recordedAt: {
                 type: Date,
                 default: Date.now
             },
-            duration: Number, // seconds में
+            duration: {
+                type: Number, // seconds mein
+                default: 0
+            },
             recordedBy: {
                 type: mongoose.Schema.Types.ObjectId,
                 ref: "User"
+            },
+            // New fields for better tracking
+            s3Key: String, // S3 file key for deletion
+            thumbnailUrl: String, // Recording thumbnail
+            resolution: String, // e.g., "1920x1080"
+            status: {
+                type: String,
+                enum: ["UPLOADING", "PROCESSING", "COMPLETED", "FAILED"],
+                default: "COMPLETED"
             }
         }
     ],
@@ -86,14 +108,19 @@ const liveSessionSchema = new mongoose.Schema({
     isPrivate: { type: Boolean, default: false },
     status: {
         type: String,
-        enum: ["SCHEDULED", "ACTIVE", "PAUSED", "ENDED", "CANCELLED","LIVE"],
+        enum: ["SCHEDULED", "ACTIVE", "PAUSED", "ENDED", "CANCELLED", "LIVE"],
         default: "SCHEDULED"
     },
 
     // 🔹 Analytics / Monitoring
-    duration: { type: Number, default: 0 }, // total duration in minutes
-    totalJoins: { type: Number, default: 0 }, // total joins count
-    peakParticipants: { type: Number, default: 0 }, // max concurrent participants
+    duration: { type: Number, default: 0 },
+    totalJoins: { type: Number, default: 0 },
+    peakParticipants: { type: Number, default: 0 },
+    
+    // Recording analytics
+    totalRecordings: { type: Number, default: 0 },
+    totalRecordingDuration: { type: Number, default: 0 }, // seconds
+    
     feedback: [{ type: String }],
     ratings: [{
         userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
@@ -102,25 +129,38 @@ const liveSessionSchema = new mongoose.Schema({
     }],
 
     // 🔹 Moderation
-    isRecordingEnabled: { type: Boolean, default: false },
+    isRecordingEnabled: { type: Boolean, default: true }, // Enable recording by default
     isChatEnabled: { type: Boolean, default: true },
     isWhiteboardEnabled: { type: Boolean, default: true },
 
-    // 🔹 🚀 Add this field for ban management
+    // 🔹 Ban management
     bannedParticipants: {
         type: [mongoose.Schema.Types.ObjectId],
         ref: "User",
         default: []
+    },
+    
+    // Metadata
+    metadata: {
+        lastRecordingAt: Date,
+        recordingCount: { type: Number, default: 0 }
     }
     
-    // ❌ NO NEED TO ADD sessionType field - using courseId check instead
 }, { timestamps: true });
+
+// ✅ Virtual for easier access
+liveSessionSchema.virtual('latestRecording').get(function() {
+    if (this.recordingUrl && this.recordingUrl.length > 0) {
+        return this.recordingUrl[this.recordingUrl.length - 1];
+    }
+    return null;
+});
 
 // ✅ Indexes for better performance
 liveSessionSchema.index({ sessionId: 1 });
 liveSessionSchema.index({ courseId: 1 });
 liveSessionSchema.index({ streamerId: 1 });
 liveSessionSchema.index({ status: 1 });
+liveSessionSchema.index({ "metadata.lastRecordingAt": -1 });
 
-// ✅ OverwriteModelError fix
 export default mongoose.models.LiveSession || mongoose.model("LiveSession", liveSessionSchema);
