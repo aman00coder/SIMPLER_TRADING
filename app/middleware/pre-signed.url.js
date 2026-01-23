@@ -1,8 +1,6 @@
-// app/middleware/pre-signed.url.js
-
 import { v4 as uuidv4 } from "uuid";
 import dotenv from "dotenv";
-import { s3 } from "./aws.s3.js"; // 🔥 same S3 instance reuse
+import { s3 } from "./aws.s3.js"; // reuse same S3 instance
 
 dotenv.config();
 
@@ -14,14 +12,14 @@ dotenv.config();
  * - Course thumbnail
  * - Lecture videos
  * - Assignments / PDFs
- * Frontend uploads directly to S3
+ * - Frontend direct uploads
  */
 
 export const generatePresignedUrl = async ({
   fileName,
   fileType,
   folder = "uploads",
-  expiresIn = 300 // 5 minutes
+  expiresIn = 300 // default 5 minutes
 }) => {
   try {
     if (!fileName || !fileType) {
@@ -31,12 +29,17 @@ export const generatePresignedUrl = async ({
     const bucketName = process.env.AWS_S3_BUCKET_NAME;
     const region = process.env.AWS_REGION;
 
-    // Sanitize file name
-    const sanitizedFileName = fileName
+    if (!bucketName || !region) {
+      throw new Error("AWS bucket or region not configured");
+    }
+
+    // 🔒 Sanitize file name (extra safe)
+    const sanitizedFileName = String(fileName)
+      .trim()
       .replace(/\s+/g, "_")
       .replace(/[^\w.-]/g, "");
 
-    // Unique S3 key
+    // 🔑 Unique S3 object key
     const fileKey = `${folder}/${Date.now()}_${uuidv4()}_${sanitizedFileName}`;
 
     const params = {
@@ -46,7 +49,7 @@ export const generatePresignedUrl = async ({
       ContentType: fileType
     };
 
-    // Generate signed URL
+    // 🔐 Generate signed URL (PUT)
     const uploadUrl = await s3.getSignedUrlPromise("putObject", params);
 
     return {
@@ -55,8 +58,9 @@ export const generatePresignedUrl = async ({
       fileKey,
       expiresIn
     };
+
   } catch (error) {
     console.error("❌ [PreSignedURL ERROR]:", error.message);
-    throw new Error("Failed to generate pre-signed URL");
+    throw error; // bubble exact error (debug friendly)
   }
 };

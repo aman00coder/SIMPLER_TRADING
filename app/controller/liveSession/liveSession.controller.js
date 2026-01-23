@@ -239,7 +239,7 @@ export const startLiveSessionRecording = async (req, res) => {
 
 
 // =====================================================
-// STOP RECORDING
+// STOP RECORDING (UPDATED – DB SAVE FIXED)
 // =====================================================
 export const stopLiveSessionRecording = async (req, res) => {
   try {
@@ -267,7 +267,7 @@ export const stopLiveSessionRecording = async (req, res) => {
 
     console.log("🛑 Stopping live recording...");
 
-    // 🔥 IMPORTANT: mark inactive early
+    // 🔥 Mark inactive early
     recording.active = false;
 
     // 1️⃣ Stop FFmpeg gracefully
@@ -280,7 +280,7 @@ export const stopLiveSessionRecording = async (req, res) => {
       console.warn("⚠️ FFmpeg stop warning:", err.message);
     }
 
-    // 2️⃣ Close mediasoup resources (safe order)
+    // 2️⃣ Close mediasoup resources
     try { recording.videoConsumer?.close(); } catch {}
     if (Array.isArray(recording.audioConsumers)) {
       recording.audioConsumers.forEach((c) => {
@@ -295,7 +295,7 @@ export const stopLiveSessionRecording = async (req, res) => {
       });
     }
 
-    // 3️⃣ Wait for upload result (if exists)
+    // 3️⃣ Wait for upload result (S3 upload)
     let uploadResult = null;
     try {
       if (recording.recordingPromise) {
@@ -305,7 +305,23 @@ export const stopLiveSessionRecording = async (req, res) => {
       console.error("🔥 Upload failed:", err.message);
     }
 
-    // 4️⃣ Reset recording state completely
+    // 4️⃣ ✅ SAVE RECORDING INTO DB (🔥 MAIN FIX 🔥)
+    if (uploadResult?.fileUrl) {
+      await liveSessionModel.findOneAndUpdate(
+        { sessionId },
+        {
+          $push: {
+            recordingUrl: {
+              fileUrl: uploadResult.fileUrl,
+              fileKey: uploadResult.fileKey || null,
+              uploadedAt: new Date()
+            }
+          }
+        }
+      );
+    }
+
+    // 5️⃣ Reset recording state
     state.recording = {
       active: false,
       videoTransport: null,
@@ -322,15 +338,14 @@ export const stopLiveSessionRecording = async (req, res) => {
       res,
       {
         sessionId,
-        recordingUrl: uploadResult?.fileUrl || null,
-        fileName: uploadResult?.fileName || null,
-        duration: uploadResult?.duration || 0
+        recordingUrl: uploadResult?.fileUrl || null
       },
-      uploadResult?.success
+      uploadResult?.fileUrl
         ? "Recording stopped and saved successfully"
         : "Recording stopped but upload failed",
       HttpStatus.OK
     );
+
   } catch (error) {
     console.error("🔥 stopLiveSessionRecording error:", error.message);
     return sendErrorResponse(
