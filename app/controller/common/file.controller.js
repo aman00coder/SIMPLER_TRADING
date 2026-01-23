@@ -170,3 +170,77 @@ export const getBulkPresignedUrls = async (req, res) => {
     );
   }
 };
+
+
+// =====================================================
+// Generate Pre-Signed URL for Recording Files
+// =====================================================
+export const getRecordingPresignedUrl = async (req, res) => {
+  try {
+    let { fileName, fileType, sessionId, fileSize } = req.body;
+
+    if (!fileName || !fileType || !sessionId) {
+      return sendErrorResponse(
+        res,
+        "fileName, fileType and sessionId are required",
+        HttpStatus.BAD_REQUEST
+      );
+    }
+
+    // Only allow video formats for recordings
+    const recordingAllowedTypes = [
+      "video/mp4",
+      "video/webm",
+      "video/quicktime",
+      "video/x-matroska"
+    ];
+
+    if (!recordingAllowedTypes.includes(fileType)) {
+      return sendErrorResponse(
+        res,
+        `Recording file type not allowed: ${fileType}`,
+        HttpStatus.BAD_REQUEST
+      );
+    }
+
+    // 🔐 Size limit for recordings (1GB)
+    if (fileSize && fileSize > 1024 * 1024 * 1024) {
+      return sendErrorResponse(
+        res,
+        "Recording file size exceeds 1GB limit",
+        HttpStatus.BAD_REQUEST
+      );
+    }
+
+    // 🔒 Sanitize filename with session prefix
+    const safeFileName = `recording_${sessionId}_${Date.now()}_${sanitizeFileName(fileName)}`;
+
+    const result = await generatePresignedUrl({
+      fileName: safeFileName,
+      fileType,
+      folder: "live-recordings" // Special folder for recordings
+    });
+
+    return sendSuccessResponse(
+      res,
+      {
+        uploadUrl: result.uploadUrl,
+        fileUrl: result.fileUrl,
+        fileKey: result.fileKey,
+        expiresIn: result.expiresIn,
+        sessionId,
+        fileName: safeFileName
+      },
+      "Recording upload URL generated successfully",
+      HttpStatus.OK
+    );
+
+  } catch (error) {
+    console.error("❌ Recording Presigned URL error:", error.message);
+    return sendErrorResponse(
+      res,
+      "Failed to generate recording upload URL",
+      HttpStatus.INTERNAL_SERVER_ERROR
+    );
+  }
+};

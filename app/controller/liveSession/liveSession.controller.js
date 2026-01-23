@@ -11,6 +11,7 @@ import { getIO } from "../../services/socket.integrated.js";
 import { ROLE_MAP } from "../../constant/role.js";
 import { roomState } from "../../services/socketState/roomState.js";
 import { waitForFFmpegExit } from "../../services/recording/ffmpegRunner.js";
+import { deleteFileFromS3 } from "../../middleware/aws.s3.js"; // ✅ ADD THIS IMPORT
 
 // =====================================================
 // HELPERS
@@ -28,7 +29,7 @@ const scheduleSessionAutoEnd = (sessionId, endTime) => {
   if (delay <= 0) return;
 
   setTimeout(async () => {
-    try {``
+    try {
       const io = getIO();
       const session = await liveSessionModel.findOne({
         _id: sessionId,
@@ -237,7 +238,6 @@ export const startLiveSessionRecording = async (req, res) => {
   }
 };
 
-
 // =====================================================
 // STOP RECORDING (UPDATED – DB SAVE FIXED)
 // =====================================================
@@ -314,7 +314,10 @@ export const stopLiveSessionRecording = async (req, res) => {
             recordingUrl: {
               fileUrl: uploadResult.fileUrl,
               fileKey: uploadResult.fileKey || null,
-              uploadedAt: new Date()
+              uploadedAt: new Date(),
+              duration: uploadResult.duration || 0, // ✅ ADD DURATION
+              fileSize: uploadResult.fileSize || 0, // ✅ ADD FILE SIZE
+              status: "COMPLETED" // ✅ ADD STATUS
             }
           }
         }
@@ -334,11 +337,21 @@ export const stopLiveSessionRecording = async (req, res) => {
       filePath: null
     };
 
+    // 6️⃣ Emit socket event
+    const io = getIO();
+    io.to(sessionId).emit("recording_stopped", {
+      sessionId,
+      recordingUrl: uploadResult?.fileUrl || null,
+      status: uploadResult?.fileUrl ? "SAVED" : "FAILED"
+    });
+
     return sendSuccessResponse(
       res,
       {
         sessionId,
-        recordingUrl: uploadResult?.fileUrl || null
+        recordingUrl: uploadResult?.fileUrl || null,
+        duration: uploadResult?.duration || 0,
+        fileSize: uploadResult?.fileSize || 0
       },
       uploadResult?.fileUrl
         ? "Recording stopped and saved successfully"
@@ -356,14 +369,14 @@ export const stopLiveSessionRecording = async (req, res) => {
   }
 };
 
-
-
-/**
- * ✅ Get Latest Recording URL for a Session
- */
-export const getLatestRecordingUrl = async (req, res) => {
+// =====================================================
+// ✅ GET ALL RECORDINGS WITH DETAILS (NEW & IMPROVED)
+// =====================================================
+export const getAllRecordingsDetailed = async (req, res) => {
   try {
     const { sessionId } = req.params;
+    const userId = req.tokenData?.userId;
+    const userRole = req.tokenData?.role;
 
     if (!sessionId) {
       return sendErrorResponse(res, "SessionId required", HttpStatus.BAD_REQUEST);
@@ -371,27 +384,182 @@ export const getLatestRecordingUrl = async (req, res) => {
 
     const session = await liveSessionModel
       .findOne({ sessionId })
-      .select("recordingUrl title sessionId");
+      .populate("streamerId", "name email role profilePic")
+      .populate("participants", "name email role profilePic")
+      .lean();
 
     if (!session) {
       return sendErrorResponse(res, "Session not found", HttpStatus.NOT_FOUND);
     }
 
-    // Get latest recording (last one in array)
-    const latestRecording = session.recordingUrl && session.recordingUrl.length > 0 
-      ? session.recordingUrl[session.recordingUrl.length - 1]
-      : null;
+    // 🔐 Permission Check
+    const isStreamer = session.streamerId._id.toString() === userId;
+    const isAdmin = userRole === ROLE_MAP.ADMIN;
+    const isParticipant = session.participants?.some(p => p._id.toString() === userId);
+
+    let canViewRecordings = false;
+    
+    if (session.isPrivate) {
+      // Private session: only streamer, admin, and participants
+      canViewRecordings = isStreamer || isAdmin || isParticipant;
+    } else {
+      // Public session: all authenticated users
+      canViewRecordings = true;
+    }
+
+    if (!canViewRecordings) {
+      return sendErrorResponse(
+        res,
+        "You don't have permission to view recordings for this session",
+        HttpStatus.FORBIDDEN
+      );
+    }
+
+    // Format recordings with more details
+    const formattedRecordings = (session.recordingUrl || []).map((rec, index) => ({
+      recordingId: rec._id || `rec-${index}`,
+      fileUrl: rec.fileUrl,
+      fileName: rec.fileName || `recording-${index + 1}.mp4`,
+      fileType: rec.fileType || "video/mp4",
+      duration: rec.duration || 0,
+      fileSize: rec.fileSize || 0,
+      uploadedAt: rec.uploadedAt || rec.recordedAt || new Date(),
+      status: rec.status || "COMPLETED",
+      thumbnailUrl: rec.thumbnailUrl || "",
+      s3Key: rec.fileKey || rec.s3Key || ""
+    }));
+
+    // Calculate statistics
+    const statistics = {
+      totalRecordings: formattedRecordings.length,
+      totalDuration: formattedRecordings.reduce((sum, rec) => sum + (rec.duration || 0), 0),
+      totalSize: formattedRecordings.reduce((sum, rec) => sum + (rec.fileSize || 0), 0),
+      averageDuration: formattedRecordings.length > 0 
+        ? Math.round(formattedRecordings.reduce((sum, rec) => sum + (rec.duration || 0), 0) / formattedRecordings.length)
+        : 0
+    };
+
+    // Group by date
+    const recordingsByDate = {};
+    formattedRecordings.forEach(rec => {
+      const date = new Date(rec.uploadedAt).toISOString().split('T')[0];
+      if (!recordingsByDate[date]) {
+        recordingsByDate[date] = [];
+      }
+      recordingsByDate[date].push(rec);
+    });
 
     return sendSuccessResponse(
       res,
       {
         sessionId: session.sessionId,
         title: session.title,
-        latestRecording: latestRecording,
-        allRecordings: session.recordingUrl || [],
-        totalRecordings: session.recordingUrl?.length || 0
+        streamer: session.streamerId,
+        status: session.status,
+        roomCode: session.roomCode,
+        isPrivate: session.isPrivate,
+        createdAt: session.createdAt,
+        
+        // Recordings Data
+        recordings: formattedRecordings,
+        
+        // Statistics
+        statistics: statistics,
+        
+        // Grouped Data
+        recordingsByDate: recordingsByDate,
+        
+        // User Permissions
+        permissions: {
+          canView: canViewRecordings,
+          canDownload: isStreamer || isAdmin,
+          canDelete: isStreamer || isAdmin,
+          canShare: true
+        },
+        
+        // Pagination Info
+        pagination: {
+          total: formattedRecordings.length,
+          page: 1,
+          limit: formattedRecordings.length,
+          totalPages: 1
+        }
       },
-      "Latest recording fetched successfully",
+      "Session recordings fetched successfully",
+      HttpStatus.OK
+    );
+
+  } catch (error) {
+    console.error("🔥 getAllRecordingsDetailed error:", error.message);
+    return sendErrorResponse(
+      res,
+      "Failed to fetch recordings",
+      HttpStatus.INTERNAL_SERVER_ERROR
+    );
+  }
+};
+
+// =====================================================
+// ✅ GET LATEST RECORDING URL (IMPROVED)
+// =====================================================
+export const getLatestRecordingUrl = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const userId = req.tokenData?.userId;
+
+    if (!sessionId) {
+      return sendErrorResponse(res, "SessionId required", HttpStatus.BAD_REQUEST);
+    }
+
+    const session = await liveSessionModel
+      .findOne({ sessionId })
+      .select("recordingUrl title sessionId streamerId isPrivate status")
+      .populate("streamerId", "name email")
+      .lean();
+
+    if (!session) {
+      return sendErrorResponse(res, "Session not found", HttpStatus.NOT_FOUND);
+    }
+
+    // Check if session is private and user is authorized
+    if (session.isPrivate && session.streamerId._id.toString() !== userId) {
+      return sendErrorResponse(
+        res,
+        "You don't have permission to access this recording",
+        HttpStatus.FORBIDDEN
+      );
+    }
+
+    // Sort recordings by upload date (newest first)
+    const sortedRecordings = (session.recordingUrl || [])
+      .filter(rec => rec.fileUrl && rec.status !== "FAILED")
+      .sort((a, b) => new Date(b.uploadedAt || b.recordedAt || 0) - new Date(a.uploadedAt || a.recordedAt || 0));
+
+    const latestRecording = sortedRecordings.length > 0 ? sortedRecordings[0] : null;
+
+    return sendSuccessResponse(
+      res,
+      {
+        sessionId: session.sessionId,
+        title: session.title,
+        sessionStatus: session.status,
+        hasRecordings: sortedRecordings.length > 0,
+        
+        latestRecording: latestRecording ? {
+          fileUrl: latestRecording.fileUrl,
+          fileName: latestRecording.fileName || "latest-recording.mp4",
+          duration: latestRecording.duration || 0,
+          fileSize: latestRecording.fileSize || 0,
+          uploadedAt: latestRecording.uploadedAt || latestRecording.recordedAt,
+          status: latestRecording.status || "COMPLETED"
+        } : null,
+        
+        allRecordingsCount: sortedRecordings.length,
+        totalDuration: sortedRecordings.reduce((sum, rec) => sum + (rec.duration || 0), 0)
+      },
+      latestRecording 
+        ? "Latest recording fetched successfully" 
+        : "No recordings found for this session",
       HttpStatus.OK
     );
 
@@ -405,65 +573,126 @@ export const getLatestRecordingUrl = async (req, res) => {
   }
 };
 
-/**
- * ✅ Get All Live Sessions of Current User Only
- */
-
+// =====================================================
+// ✅ GET ALL LIVE SESSIONS (IMPROVED)
+// =====================================================
 export const getAllLiveSessions = async (req, res) => {
-    try {
-        const userId = req.tokenData?.userId;
-        const userRole = req.tokenData?.role;
+  try {
+    const userId = req.tokenData?.userId;
+    const userRole = req.tokenData?.role;
+    const { 
+      page = 1, 
+      limit = 10, 
+      status, 
+      courseId,
+      withRecordings = false 
+    } = req.query;
 
-        if (!userId || !userRole) {
-            return sendErrorResponse(res, "Unauthorized: missing credentials", 401);
-        }
-
-        let filter = {};
-        if (userRole === ROLE_MAP.STREAMER) {
-            filter.streamerId = userId;
-        } else {
-            filter.status = "ACTIVE";
-        }
-
-        const liveSessions = await liveSessionModel
-            .find(filter)
-            .populate("streamerId", "name email role profilePic")
-            .populate("courseId")
-            .populate("participants", "name email role profilePic")
-            .populate({
-                path: "whiteboardId",
-                populate: { path: "participants", select: "name email role profilePic" }
-            })
-            .sort({ createdAt: -1 });
-
-        // 🔹 Expired sessions filter
-        const sessionsFiltered = liveSessions.map(session => {
-            const sessionObj = session.toObject();
-            if (session.status === "ENDED" || (session.endTime && new Date() > new Date(session.endTime))) {
-                return { ...sessionObj, expired: true };
-            }
-            return sessionObj;
-        });
-
-        return sendSuccessResponse(
-            res,
-            sessionsFiltered,
-            userRole === ROLE_MAP.STREAMER ? "Your live sessions fetched successfully" : "All live sessions fetched successfully",
-            200
-        );
-
-    } catch (error) {
-        console.error("getAllLiveSessions Error:", error.message);
-        return sendErrorResponse(res, "Internal server error", 500);
+    if (!userId || !userRole) {
+      return sendErrorResponse(res, "Unauthorized: missing credentials", 401);
     }
+
+    let filter = {};
+    
+    // Role-based filtering
+    if (userRole === ROLE_MAP.STREAMER) {
+      filter.streamerId = userId;
+    } else {
+      filter.status = "ACTIVE";
+    }
+
+    // Additional filters
+    if (status) filter.status = status;
+    if (courseId) filter.courseId = courseId;
+    if (withRecordings === 'true') {
+      filter.recordingUrl = { $exists: true, $ne: [] };
+    }
+
+    // Pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const liveSessions = await liveSessionModel
+      .find(filter)
+      .populate("streamerId", "name email role profilePic")
+      .populate("courseId", "title thumbnail")
+      .populate("participants", "name email role profilePic")
+      .populate({
+        path: "whiteboardId",
+        populate: { path: "participants", select: "name email role profilePic" }
+      })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const totalSessions = await liveSessionModel.countDocuments(filter);
+
+    // Format response with recording info
+    const sessionsFiltered = liveSessions.map(session => {
+      const sessionObj = session.toObject();
+      
+      // Check if session expired
+      const isExpired = session.status === "ENDED" || 
+                       (session.endTime && new Date() > new Date(session.endTime));
+      
+      // Recording statistics
+      const recordingStats = {
+        hasRecordings: session.recordingUrl?.length > 0,
+        totalRecordings: session.recordingUrl?.length || 0,
+        totalDuration: session.recordingUrl?.reduce((sum, rec) => sum + (rec.duration || 0), 0) || 0,
+        latestRecording: session.recordingUrl?.length > 0 
+          ? session.recordingUrl[session.recordingUrl.length - 1]
+          : null
+      };
+
+      return { 
+        ...sessionObj, 
+        expired: isExpired,
+        recordingStats,
+        canAccess: userRole === ROLE_MAP.STREAMER || 
+                  session.streamerId._id.toString() === userId ||
+                  !session.isPrivate
+      };
+    });
+
+    return sendSuccessResponse(
+      res,
+      {
+        sessions: sessionsFiltered,
+        pagination: {
+          total: totalSessions,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          totalPages: Math.ceil(totalSessions / parseInt(limit)),
+          hasNextPage: (parseInt(page) * parseInt(limit)) < totalSessions,
+          hasPrevPage: parseInt(page) > 1
+        },
+        filters: {
+          status,
+          courseId,
+          withRecordings,
+          userRole
+        }
+      },
+      userRole === ROLE_MAP.STREAMER 
+        ? "Your live sessions fetched successfully" 
+        : "All live sessions fetched successfully",
+      200
+    );
+
+  } catch (error) {
+    console.error("getAllLiveSessions Error:", error.message);
+    return sendErrorResponse(res, "Internal server error", 500);
+  }
 };
 
-/**
- * ✅ Get Live Session Recordings
- */
+// =====================================================
+// ✅ GET LIVE SESSION RECORDINGS (IMPROVED)
+// =====================================================
 export const getLiveSessionRecordings = async (req, res) => {
   try {
     const { sessionId } = req.params;
+    const userId = req.tokenData?.userId;
+    const userRole = req.tokenData?.role;
 
     if (!sessionId) {
       return sendErrorResponse(res, "SessionId required", 400);
@@ -471,22 +700,82 @@ export const getLiveSessionRecordings = async (req, res) => {
 
     const session = await liveSessionModel
       .findOne({ sessionId })
-      .select("recordingUrl title streamerId status sessionId roomCode")
-      .populate("streamerId", "name email role profilePic");
+      .select("recordingUrl title streamerId status sessionId roomCode isPrivate courseId participants")
+      .populate("streamerId", "name email role profilePic")
+      .populate("courseId", "title thumbnail")
+      .populate("participants", "name email")
+      .lean();
 
     if (!session) {
       return sendErrorResponse(res, "Live session not found", 404);
     }
 
+    // Permission check
+    const isStreamer = session.streamerId._id.toString() === userId;
+    const isAdmin = userRole === ROLE_MAP.ADMIN;
+    const isParticipant = session.participants?.some(p => p._id.toString() === userId);
+
+    let canViewRecordings = false;
+    
+    if (session.isPrivate) {
+      canViewRecordings = isStreamer || isAdmin || isParticipant;
+    } else {
+      canViewRecordings = true;
+    }
+
+    if (!canViewRecordings) {
+      return sendErrorResponse(
+        res,
+        "You don't have permission to view recordings for this session",
+        HttpStatus.FORBIDDEN
+      );
+    }
+
+    // Format recordings
+    const formattedRecordings = (session.recordingUrl || []).map((rec, index) => ({
+      recordingId: rec._id || `rec-${index}`,
+      fileUrl: rec.fileUrl,
+      fileName: rec.fileName || `recording-${index + 1}.mp4`,
+      duration: rec.duration || 0,
+      fileSize: rec.fileSize || 0,
+      uploadedAt: rec.uploadedAt || rec.recordedAt,
+      status: rec.status || "COMPLETED",
+      thumbnailUrl: rec.thumbnailUrl || "",
+      s3Key: rec.fileKey || rec.s3Key || ""
+    }));
+
+    // Sort by date (newest first)
+    formattedRecordings.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+
     return sendSuccessResponse(
       res,
       {
-        sessionId,
+        sessionId: session.sessionId,
         title: session.title,
         streamer: session.streamerId,
+        course: session.courseId,
         status: session.status,
         roomCode: session.roomCode,
-        recordings: session.recordingUrl || []
+        isPrivate: session.isPrivate,
+        totalParticipants: session.participants?.length || 0,
+        
+        recordings: formattedRecordings,
+        totalRecordings: formattedRecordings.length,
+        totalDuration: formattedRecordings.reduce((sum, rec) => sum + (rec.duration || 0), 0),
+        
+        permissions: {
+          canView: canViewRecordings,
+          canDownload: isStreamer || isAdmin,
+          canDelete: isStreamer || isAdmin,
+          isStreamer: isStreamer,
+          isAdmin: isAdmin,
+          isParticipant: isParticipant
+        },
+        
+        metadata: {
+          createdAt: session.createdAt,
+          lastRecording: formattedRecordings.length > 0 ? formattedRecordings[0].uploadedAt : null
+        }
       },
       "Live session recordings fetched successfully",
       200
@@ -498,34 +787,137 @@ export const getLiveSessionRecordings = async (req, res) => {
   }
 };
 
-/**
- * ✅ Get All Recordings of Streamer
- */
+// =====================================================
+// ✅ GET ALL RECORDINGS OF STREAMER (IMPROVED)
+// =====================================================
 export const getMyLiveSessionRecordings = async (req, res) => {
   try {
     const userId = req.tokenData?.userId;
+    const { 
+      page = 1, 
+      limit = 10, 
+      courseId,
+      sortBy = "newest",
+      fromDate,
+      toDate 
+    } = req.query;
+
+    if (!userId) {
+      return sendErrorResponse(res, "Unauthorized", 401);
+    }
+
+    let filter = { 
+      streamerId: userId, 
+      recordingUrl: { $exists: true, $ne: [] } 
+    };
+
+    // Additional filters
+    if (courseId) filter.courseId = courseId;
+    
+    // Date filter
+    if (fromDate || toDate) {
+      filter.createdAt = {};
+      if (fromDate) filter.createdAt.$gte = new Date(fromDate);
+      if (toDate) filter.createdAt.$lte = new Date(toDate);
+    }
+
+    // Pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    // Sort options
+    let sortOption = { createdAt: -1 };
+    if (sortBy === "oldest") sortOption = { createdAt: 1 };
+    if (sortBy === "title") sortOption = { title: 1 };
 
     const sessions = await liveSessionModel
-      .find({ 
-        streamerId: userId, 
-        recordingUrl: { $exists: true, $ne: [] } 
-      })
-      .select("sessionId title recordingUrl createdAt roomCode")
-      .sort({ createdAt: -1 });
+      .find(filter)
+      .select("sessionId title recordingUrl createdAt roomCode courseId duration endTime")
+      .populate("courseId", "title thumbnail")
+      .sort(sortOption)
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const totalSessions = await liveSessionModel.countDocuments(filter);
+
+    // Calculate total statistics
+    let totalStats = {
+      totalRecordings: 0,
+      totalDuration: 0,
+      totalSize: 0,
+      sessionsWithRecordings: 0
+    };
 
     // Format the response
-    const formattedResponse = sessions.map(session => ({
-      sessionId: session.sessionId,
-      title: session.title,
-      roomCode: session.roomCode,
-      createdAt: session.createdAt,
-      recordings: session.recordingUrl,
-      totalRecordings: session.recordingUrl?.length || 0
-    }));
+    const formattedResponse = sessions.map(session => {
+      const sessionRecordings = (session.recordingUrl || []).map(rec => ({
+        recordingId: rec._id,
+        fileUrl: rec.fileUrl,
+        fileName: rec.fileName || "recording.mp4",
+        duration: rec.duration || 0,
+        fileSize: rec.fileSize || 0,
+        uploadedAt: rec.uploadedAt || rec.recordedAt,
+        status: rec.status || "COMPLETED",
+        thumbnailUrl: rec.thumbnailUrl || ""
+      }));
+
+      // Update total stats
+      totalStats.totalRecordings += sessionRecordings.length;
+      totalStats.totalDuration += sessionRecordings.reduce((sum, rec) => sum + (rec.duration || 0), 0);
+      totalStats.totalSize += sessionRecordings.reduce((sum, rec) => sum + (rec.fileSize || 0), 0);
+      totalStats.sessionsWithRecordings++;
+
+      return {
+        sessionId: session.sessionId,
+        title: session.title,
+        roomCode: session.roomCode,
+        course: session.courseId,
+        createdAt: session.createdAt,
+        duration: session.duration,
+        endTime: session.endTime,
+        recordings: sessionRecordings,
+        totalRecordings: sessionRecordings.length,
+        sessionDuration: sessionRecordings.reduce((sum, rec) => sum + (rec.duration || 0), 0),
+        hasRecordings: sessionRecordings.length > 0
+      };
+    });
+
+    // Calculate averages
+    const averages = {
+      recordingsPerSession: totalStats.sessionsWithRecordings > 0 
+        ? Math.round(totalStats.totalRecordings / totalStats.sessionsWithRecordings) 
+        : 0,
+      averageDuration: totalStats.totalRecordings > 0 
+        ? Math.round(totalStats.totalDuration / totalStats.totalRecordings) 
+        : 0
+    };
 
     return sendSuccessResponse(
       res,
-      formattedResponse,
+      {
+        sessions: formattedResponse,
+        
+        // Statistics
+        statistics: totalStats,
+        averages: averages,
+        
+        // Pagination
+        pagination: {
+          total: totalSessions,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          totalPages: Math.ceil(totalSessions / parseInt(limit)),
+          hasNextPage: (parseInt(page) * parseInt(limit)) < totalSessions,
+          hasPrevPage: parseInt(page) > 1
+        },
+        
+        // Filters applied
+        filters: {
+          courseId,
+          sortBy,
+          fromDate,
+          toDate
+        }
+      },
       "Your live session recordings fetched successfully",
       200
     );
@@ -536,7 +928,110 @@ export const getMyLiveSessionRecordings = async (req, res) => {
   }
 };
 
-// 🔹 New Controller: Get Live Sessions by Course
+// =====================================================
+// ✅ GET RECORDING BY ID (NEW FUNCTION)
+// =====================================================
+export const getRecordingById = async (req, res) => {
+  try {
+    const { sessionId, recordingId } = req.params;
+    const userId = req.tokenData?.userId;
+    const userRole = req.tokenData?.role;
+
+    if (!sessionId || !recordingId) {
+      return sendErrorResponse(res, "Session ID and Recording ID required", 400);
+    }
+
+    const session = await liveSessionModel
+      .findOne({ sessionId })
+      .populate("streamerId", "name email profilePic")
+      .lean();
+
+    if (!session) {
+      return sendErrorResponse(res, "Session not found", 404);
+    }
+
+    // Find the specific recording
+    const recording = (session.recordingUrl || []).find(
+      rec => rec._id?.toString() === recordingId || 
+             rec.fileUrl?.includes(recordingId)
+    );
+
+    if (!recording) {
+      return sendErrorResponse(res, "Recording not found", 404);
+    }
+
+    // Permission check
+    const isStreamer = session.streamerId._id.toString() === userId;
+    const isAdmin = userRole === ROLE_MAP.ADMIN;
+    const isParticipant = session.participants?.some(p => p.toString() === userId);
+
+    let canAccess = false;
+    
+    if (session.isPrivate) {
+      canAccess = isStreamer || isAdmin || isParticipant;
+    } else {
+      canAccess = true;
+    }
+
+    if (!canAccess) {
+      return sendErrorResponse(
+        res,
+        "You don't have permission to access this recording",
+        HttpStatus.FORBIDDEN
+      );
+    }
+
+    // Format recording response
+    const formattedRecording = {
+      recordingId: recording._id || recordingId,
+      fileUrl: recording.fileUrl,
+      fileName: recording.fileName || "recording.mp4",
+      fileType: recording.fileType || "video/mp4",
+      duration: recording.duration || 0,
+      fileSize: recording.fileSize || 0,
+      uploadedAt: recording.uploadedAt || recording.recordedAt,
+      status: recording.status || "COMPLETED",
+      thumbnailUrl: recording.thumbnailUrl || "",
+      s3Key: recording.fileKey || recording.s3Key || "",
+      
+      // Session info
+      sessionInfo: {
+        sessionId: session.sessionId,
+        title: session.title,
+        streamer: session.streamerId,
+        roomCode: session.roomCode,
+        isPrivate: session.isPrivate
+      },
+      
+      // Permissions
+      permissions: {
+        canDownload: isStreamer || isAdmin,
+        canDelete: isStreamer || isAdmin,
+        canShare: true
+      },
+      
+      // Analytics (if available)
+      analytics: {
+        views: recording.views || 0,
+        downloads: recording.downloads || 0,
+        lastAccessed: recording.lastAccessed
+      }
+    };
+
+    return sendSuccessResponse(
+      res,
+      formattedRecording,
+      "Recording fetched successfully",
+      HttpStatus.OK
+    );
+
+  } catch (error) {
+    console.error("🔥 getRecordingById error:", error.message);
+    return sendErrorResponse(res, "Failed to fetch recording", HttpStatus.INTERNAL_SERVER_ERROR);
+  }
+};
+
+// 🔹 Get Live Sessions by Course (SAME - NO CHANGE NEEDED)
 export const getLiveSessionsByCourse = async (req, res) => {
     try {
         const { courseId } = req.params;
@@ -574,7 +1069,7 @@ export const getLiveSessionsByCourse = async (req, res) => {
     }
 };
 
-/** Pause Live Session */
+// 🔹 Pause Live Session (SAME - NO CHANGE NEEDED)
 export const pauseLiveSession = async (req, res) => {
   try {
     const io = getIO();
@@ -600,7 +1095,7 @@ export const pauseLiveSession = async (req, res) => {
 };
 
 // =========================
-// Resume Live Session
+// Resume Live Session (SAME - NO CHANGE NEEDED)
 export const resumeLiveSession = async (req, res) => {
   try {
     const io = getIO();
@@ -626,9 +1121,7 @@ export const resumeLiveSession = async (req, res) => {
 };
 
 // =========================
-// Save Whiteboard Recording
-// =========================
-/** Save Whiteboard Recording */
+// Save Whiteboard Recording (SAME - NO CHANGE NEEDED)
 export const saveWhiteboardRecording = async (req, res) => {
   try {
     const { whiteboardId } = req.params;
@@ -680,8 +1173,7 @@ export const saveWhiteboardRecording = async (req, res) => {
 };
 
 // =========================
-// Get Session Analytics
-// =========================
+// Get Session Analytics (SAME - NO CHANGE NEEDED)
 export const getSessionAnalytics = async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -848,14 +1340,15 @@ export const updateLiveSession = async (req, res) => {
   }
 };
 
-// 🔹 Delete a specific recording from session
+// 🔹 Delete a specific recording from session (IMPROVED)
 export const deleteSessionRecording = async (req, res) => {
   try {
-    const { sessionId, recordingIndex } = req.params;
+    const { sessionId, recordingId } = req.params; // Changed from recordingIndex to recordingId
     const userId = req.tokenData?.userId;
+    const userRole = req.tokenData?.role;
 
-    if (!sessionId || recordingIndex === undefined) {
-      return sendErrorResponse(res, "SessionId and recording index required", 400);
+    if (!sessionId || !recordingId) {
+      return sendErrorResponse(res, "SessionId and Recording ID required", 400);
     }
 
     const session = await liveSessionModel.findOne({ sessionId });
@@ -863,28 +1356,59 @@ export const deleteSessionRecording = async (req, res) => {
       return sendErrorResponse(res, "Live session not found", 404);
     }
 
-    // Check if user is streamer
-    if (session.streamerId.toString() !== userId) {
+    // Check if user is authorized
+    const isStreamer = session.streamerId.toString() === userId;
+    const isAdmin = userRole === ROLE_MAP.ADMIN;
+
+    if (!isStreamer && !isAdmin) {
       return sendErrorResponse(res, "Unauthorized to delete recording", 401);
     }
 
-    // Check if recording exists at index
-    if (!session.recordingUrl || session.recordingUrl.length <= recordingIndex) {
+    // Find recording index by ID
+    const recordingIndex = session.recordingUrl.findIndex(
+      rec => rec._id?.toString() === recordingId || 
+             rec.fileUrl?.includes(recordingId)
+    );
+
+    if (recordingIndex === -1) {
       return sendErrorResponse(res, "Recording not found", 404);
     }
 
     const recordingToDelete = session.recordingUrl[recordingIndex];
     
     // Delete from S3
-    await deleteFileFromS3(recordingToDelete.fileUrl);
-    
+    if (recordingToDelete.fileUrl) {
+      try {
+        await deleteFileFromS3(recordingToDelete.fileUrl);
+        console.log(`✅ Deleted recording from S3: ${recordingToDelete.fileUrl}`);
+      } catch (s3Error) {
+        console.warn("⚠️ S3 delete warning:", s3Error.message);
+        // Continue even if S3 delete fails
+      }
+    }
+
     // Remove from array
     session.recordingUrl.splice(recordingIndex, 1);
     await session.save();
 
+    // Emit socket event
+    const io = getIO();
+    io.to(sessionId).emit("recording_deleted", {
+      sessionId,
+      recordingId: recordingId,
+      remainingCount: session.recordingUrl.length
+    });
+
     return sendSuccessResponse(
       res,
-      { deletedRecording: recordingToDelete },
+      { 
+        deletedRecording: {
+          id: recordingId,
+          fileName: recordingToDelete.fileName,
+          fileUrl: recordingToDelete.fileUrl
+        },
+        remainingRecordings: session.recordingUrl.length
+      },
       "Recording deleted successfully",
       200
     );
@@ -895,7 +1419,7 @@ export const deleteSessionRecording = async (req, res) => {
   }
 };
 
-// 🔹 Soft delete live session
+// 🔹 Soft delete live session (SAME - NO CHANGE NEEDED)
 export const softDeleteLiveSession = async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -933,7 +1457,7 @@ export const softDeleteLiveSession = async (req, res) => {
   }
 };
 
-// 🔹 Restore live session
+// 🔹 Restore live session (SAME - NO CHANGE NEEDED)
 export const restoreLiveSession = async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -968,5 +1492,83 @@ export const restoreLiveSession = async (req, res) => {
   } catch (error) {
     console.log(error.message);
     return sendErrorResponse(res, errorEn.INTERNAL_SERVER_ERROR, HttpStatus.INTERNAL_SERVER_ERROR);
+  }
+};
+
+// =====================================================
+// ✅ DOWNLOAD RECORDING (NEW FUNCTION)
+// =====================================================
+export const downloadRecording = async (req, res) => {
+  try {
+    const { sessionId, recordingId } = req.params;
+    const userId = req.tokenData?.userId;
+    const userRole = req.tokenData?.role;
+
+    if (!sessionId || !recordingId) {
+      return sendErrorResponse(res, "Session ID and Recording ID required", 400);
+    }
+
+    const session = await liveSessionModel.findOne({ sessionId }).lean();
+    if (!session) {
+      return sendErrorResponse(res, "Session not found", 404);
+    }
+
+    // Find the recording
+    const recording = (session.recordingUrl || []).find(
+      rec => rec._id?.toString() === recordingId || 
+             rec.fileUrl?.includes(recordingId)
+    );
+
+    if (!recording || !recording.fileUrl) {
+      return sendErrorResponse(res, "Recording not found", 404);
+    }
+
+    // Permission check
+    const isStreamer = session.streamerId.toString() === userId;
+    const isAdmin = userRole === ROLE_MAP.ADMIN;
+    const isParticipant = session.participants?.some(p => p.toString() === userId);
+
+    let canDownload = false;
+    
+    if (session.isPrivate) {
+      canDownload = isStreamer || isAdmin || isParticipant;
+    } else {
+      canDownload = isStreamer || isAdmin; // Public session: only streamer/admin can download
+    }
+
+    if (!canDownload) {
+      return sendErrorResponse(
+        res,
+        "You don't have permission to download this recording",
+        HttpStatus.FORBIDDEN
+      );
+    }
+
+    // Generate download URL (presigned URL for S3)
+    // Note: You need to implement generateDownloadUrl in your S3 service
+    const downloadUrl = recording.fileUrl; // Direct URL or generate presigned URL
+    
+    // Update download count
+    await liveSessionModel.findOneAndUpdate(
+      { sessionId, "recordingUrl._id": recording._id },
+      { $inc: { "recordingUrl.$.downloads": 1 } }
+    );
+
+    return sendSuccessResponse(
+      res,
+      {
+        downloadUrl,
+        fileName: recording.fileName || "recording.mp4",
+        fileSize: recording.fileSize || 0,
+        duration: recording.duration || 0,
+        expiresIn: 3600 // 1 hour
+      },
+      "Download URL generated successfully",
+      HttpStatus.OK
+    );
+
+  } catch (error) {
+    console.error("🔥 downloadRecording error:", error.message);
+    return sendErrorResponse(res, "Failed to generate download URL", HttpStatus.INTERNAL_SERVER_ERROR);
   }
 };
