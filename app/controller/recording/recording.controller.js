@@ -12,78 +12,64 @@ import { generateRecordingPresignedUrl, deleteFileFromS3 } from "../../middlewar
 // ✅ GET RECORDING PRE-SIGNED URL (SESSION SPECIFIC)
 // =====================================================
 export const getRecordingPresignedUrl = async (req, res) => {
-    try {
-        const { sessionId } = req.params;
-        const userId = req.tokenData?.userId;
-        const { fileName, fileType = "video/mp4", fileSize } = req.body;
+  try {
+    const { sessionId } = req.params;
+    const userId = req.tokenData?.userId;
+    const { fileName, fileType = "video/mp4", fileSize = 0 } = req.body;
 
-        if (!sessionId || !fileName) {
-            return sendErrorResponse(
-                res,
-                "Session ID and file name are required",
-                HttpStatus.BAD_REQUEST
-            );
-        }
-
-        // Verify session exists
-        const session = await liveSessionModel.findOne({ sessionId });
-        if (!session) {
-            return sendErrorResponse(
-                res,
-                "Live session not found",
-                HttpStatus.NOT_FOUND
-            );
-        }
-
-        // Check permissions - only streamer can upload recordings
-        if (session.streamerId.toString() !== userId) {
-            return sendErrorResponse(
-                res,
-                "Only the streamer can upload recordings for this session",
-                HttpStatus.UNAUTHORIZED
-            );
-        }
-
-        // Size validation (optional)
-        const MAX_SIZE = 1024 * 1024 * 500; // 500MB
-        if (fileSize && fileSize > MAX_SIZE) {
-            return sendErrorResponse(
-                res,
-                "File size exceeds 500MB limit",
-                HttpStatus.BAD_REQUEST
-            );
-        }
-
-        // Use existing function from aws.s3.js
-        const presignedData = await generateRecordingPresignedUrl({
-            sessionId,
-            fileName,
-            fileType,
-            folder: "live-recordings"
-        });
-
-        return sendSuccessResponse(
-            res,
-            {
-                uploadUrl: presignedData.uploadUrl,
-                fileUrl: presignedData.fileUrl,
-                fileKey: presignedData.fileKey,
-                expiresIn: presignedData.expiresIn,
-                sessionId: sessionId
-            },
-            "Recording pre-signed URL generated successfully",
-            HttpStatus.OK
-        );
-
-    } catch (error) {
-        console.error("🔥 getRecordingPresignedUrl error:", error.message);
-        return sendErrorResponse(
-            res,
-            "Failed to generate recording URL",
-            HttpStatus.INTERNAL_SERVER_ERROR
-        );
+    if (!sessionId || !fileName) {
+      return sendErrorResponse(
+        res,
+        "Session ID and file name are required",
+        HttpStatus.BAD_REQUEST
+      );
     }
+
+    const session = await liveSessionModel.findOne({ sessionId });
+    if (!session) {
+      return sendErrorResponse(res, "Live session not found", HttpStatus.NOT_FOUND);
+    }
+
+    if (session.streamerId.toString() !== userId) {
+      return sendErrorResponse(
+        res,
+        "Only the streamer can upload recordings",
+        HttpStatus.UNAUTHORIZED
+      );
+    }
+
+    const presignedData = await generateRecordingPresignedUrl({
+      sessionId,
+      fileName,
+      fileType,
+      folder: "live-recordings"
+    });
+
+    return sendSuccessResponse(
+      res,
+      {
+        sessionId,
+        uploadUrl: presignedData.uploadUrl,
+        fileUrl: presignedData.fileUrl,
+        fileKey: presignedData.fileKey,
+        fileName,
+        fileType,
+        fileSize
+      },
+      "Recording upload URL generated",
+      HttpStatus.OK
+    );
+
+  } catch (error) {
+    console.error("🔥 getRecordingPresignedUrl error:", error.message);
+    return sendErrorResponse(
+      res,
+      "Failed to generate upload URL",
+      HttpStatus.INTERNAL_SERVER_ERROR
+    );
+  }
 };
+
 
 // =====================================================
 // ✅ SAVE RECORDING METADATA TO SESSION
