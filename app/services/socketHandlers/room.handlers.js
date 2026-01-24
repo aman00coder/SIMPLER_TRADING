@@ -242,6 +242,7 @@ export const roomJoinHandler = (socket, io, mediasoupWorker) => {
         }
       }
 
+      
       // Update peak participants count
       const currentParticipantsCount = state.viewers.size + (state.streamerSocketId ? 1 : 0);
       if ((session.peakParticipants || 0) < currentParticipantsCount) {
