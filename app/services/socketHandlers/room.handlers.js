@@ -141,6 +141,7 @@ export const roomJoinHandler = (socket, io, mediasoupWorker) => {
       // Create Mediasoup router for streamer
       if (userRole === ROLE_MAP.STREAMER && !state.router) {
         console.log("Creating Mediasoup router for session:", sid);
+        // ✅ UPDATED: H.264 ko priority dete hue aur VP8 ko backup ke taur par
         const mediaCodecs = [
           {
             kind: "audio",
@@ -150,17 +151,28 @@ export const roomJoinHandler = (socket, io, mediasoupWorker) => {
           },
           {
             kind: "video",
+            mimeType: "video/H264",
+            clockRate: 90000,
+            parameters: {
+              'packetization-mode': 1,
+              'profile-level-id': '42e01f',
+              'level-asymmetry-allowed': 1
+            }
+          },
+          {
+            kind: "video",
             mimeType: "video/VP8",
             clockRate: 90000,
             parameters: {
               "x-google-start-bitrate": process.env.NODE_ENV === "production" ? 500000 : 1000000,
-            },
-          },
+            }
+          }
         ];
 
         // ✅ Yahan mediasoupWorker use karo (jo parameter mein aaya hai)
         state.router = await mediasoupWorker.createRouter({ mediaCodecs });
         console.log("Mediasoup router created for session:", sid);
+        console.log("Codec priority: H.264 (primary), VP8 (backup)");
       }
 
       state.sockets.set(socket.id, { userId, role: userRole, userName: user?.name || "Unknown" });
