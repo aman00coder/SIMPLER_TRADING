@@ -9,6 +9,7 @@ import { whiteboardHandlers } from "./whiteboard.handlers.js";
 import { webrtcHandlers } from "./webrtc.handlers.js";
 import { permissionHandlers } from "./permission.handlers.js";
 import { cleanupSocketFromRoom } from "../socketUtils/general.utils.js";
+import { speakingHandlers } from "./speaking.handlers.js"; // ADD THIS
 
 let mediasoupWorker;
 
@@ -27,6 +28,8 @@ export const setupSocketHandlers = (io, worker) => {
     whiteboardHandlers(socket, io);
     webrtcHandlers(socket, io);
     permissionHandlers(socket, io);
+     speakingHandlers(socket, io); // ADD THIS
+
 
     // ✅ IO PARAMETER ADD KAR DIYA
     socket.on("disconnect", () => cleanupSocketFromRoom(socket, io));

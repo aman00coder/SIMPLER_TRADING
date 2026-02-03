@@ -85,12 +85,38 @@ export const cleanupSocketFromRoom = async (socket, io) => {
       return;
     }
 
+    // 🔥 SPEAKING & HAND RAISE STATUS RESET ADDED HERE
+    if (meta.userId) {
+      const participant = state.participants.get(meta.userId);
+      if (participant) {
+        // Notify that user stopped speaking
+        if (participant.isSpeaking) {
+          io.to(sid).emit("participant_speaking_status", {
+            userId: meta.userId,
+            isSpeaking: false,
+            timestamp: new Date(),
+            userName: participant.name
+          });
+        }
+
+        // Notify that hand is down
+        if (participant.isHandRaised) {
+          io.to(sid).emit("hand_raise_status", {
+            userId: meta.userId,
+            isHandRaised: false,
+            timestamp: new Date(),
+            userName: participant.name
+          });
+        }
+      }
+    }
+
     if (state.pendingScreenShareRequests.has(meta.userId)) {
       state.pendingScreenShareRequests.delete(meta.userId);
     }
 
     if (state.activeScreenShares.has(meta.userId)) {
-      await cleanupViewerScreenShare(socket, sid, meta.userId); // ✅ NAAM CHANGE KAR DIYA
+      await cleanupViewerScreenShare(socket, sid, meta.userId);
     }
 
     // Clean up consumers
@@ -180,7 +206,11 @@ export const cleanupSocketFromRoom = async (socket, io) => {
 
       state.viewers.delete(socket.id);
 
-      io.to(sid).emit("user_left", { userId: meta.userId, socketId: socket.id });
+      io.to(sid).emit("user_left", { 
+        userId: meta.userId, 
+        socketId: socket.id,
+        userName: meta.userName 
+      });
       console.log(`Viewer ${socket.id} left room ${sid}`);
     } else {
       console.log(`Streamer ${socket.id} left room ${sid}`);
@@ -234,7 +264,6 @@ export const cleanupSocketFromRoom = async (socket, io) => {
   }
 };
 
-// ✅ NAAM CHANGE KAR DIYA
 const cleanupViewerScreenShare = async (socket, sessionId, userId = null) => {
   // This is a simplified version for cleanup purposes
   const state = roomState.get(sessionId);
@@ -259,5 +288,69 @@ const cleanupViewerScreenShare = async (socket, sessionId, userId = null) => {
       }
       state.producers.delete(producerId);
     }
+  }
+};
+
+// Speaking detection helper functions
+export const startSpeakingDetection = (io, sessionId, userId, isSpeaking) => {
+  const state = roomState.get(sessionId);
+  if (!state) return;
+
+  const participant = state.participants.get(userId);
+  if (participant) {
+    participant.isSpeaking = isSpeaking;
+    
+    // Notify all participants
+    io.to(sessionId).emit("participant_speaking_status", {
+      userId,
+      isSpeaking,
+      timestamp: new Date()
+    });
+
+    // Also update in participant list
+    broadcastParticipantsList(io, sessionId);
+  }
+};
+
+export const broadcastHandRaise = (io, sessionId, userId, isHandRaised) => {
+  const state = roomState.get(sessionId);
+  if (!state) return;
+
+  const participant = state.participants.get(userId);
+  if (participant) {
+    participant.isHandRaised = isHandRaised;
+    participant.handRaisedAt = isHandRaised ? new Date() : null;
+    
+    // Notify all participants
+    io.to(sessionId).emit("hand_raise_status", {
+      userId,
+      isHandRaised,
+      timestamp: new Date(),
+      userName: participant.name
+    });
+
+    // Update participant list
+    broadcastParticipantsList(io, sessionId);
+  }
+};
+
+export const resetAllHandRaised = (io, sessionId) => {
+  const state = roomState.get(sessionId);
+  if (!state) return;
+
+  let resetCount = 0;
+  state.participants.forEach((participant) => {
+    if (participant.isHandRaised) {
+      participant.isHandRaised = false;
+      participant.handRaisedAt = null;
+      resetCount++;
+    }
+  });
+
+  if (resetCount > 0) {
+    io.to(sessionId).emit("all_hands_down", {
+      timestamp: new Date()
+    });
+    broadcastParticipantsList(io, sessionId);
   }
 };
