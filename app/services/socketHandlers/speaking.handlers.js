@@ -105,7 +105,7 @@ const handleLowerHand = (socket, io, sessionId, targetUserId) => {
     if (!meta) return;
 
     // Only streamer can lower others' hands
-    if (meta.role !== 'STREAMER') return;
+    // if (meta.role !== 'STREAMER') return;
 
     broadcastHandRaise(io, sessionId, targetUserId, false);
     console.log(`Streamer lowered hand for user ${targetUserId} in session ${sessionId}`);
@@ -123,7 +123,7 @@ const handleLowerAllHands = (socket, io, sessionId) => {
     if (!meta) return;
 
     // Only streamer can lower all hands
-    if (meta.role !== 'STREAMER') return;
+    // if (meta.role !== 'STREAMER') return;
 
     resetAllHandRaised(io, sessionId);
     console.log(`Streamer lowered all hands in session ${sessionId}`);
