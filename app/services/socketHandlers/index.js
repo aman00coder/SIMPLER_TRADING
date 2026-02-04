@@ -10,6 +10,8 @@ import { webrtcHandlers } from "./webrtc.handlers.js";
 import { permissionHandlers } from "./permission.handlers.js";
 import { cleanupSocketFromRoom } from "../socketUtils/general.utils.js";
 import { speakingHandlers } from "./speaking.handlers.js"; // ADD THIS
+import { pingHandlers } from "./ping.handlers.js";
+
 
 let mediasoupWorker;
 
@@ -29,6 +31,8 @@ export const setupSocketHandlers = (io, worker) => {
     webrtcHandlers(socket, io);
     permissionHandlers(socket, io);
      speakingHandlers(socket, io); // ADD THIS
+         pingHandlers(socket, io);
+
 
 
     // ✅ IO PARAMETER ADD KAR DIYA

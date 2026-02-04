@@ -354,3 +354,140 @@ export const resetAllHandRaised = (io, sessionId) => {
     broadcastParticipantsList(io, sessionId);
   }
 };
+
+
+
+// services/socketUtils/general.utils.js mein yeh function add karein
+
+export const startPingPongMonitoring = (socket, io, sessionId) => {
+  const state = roomState.get(sessionId);
+  if (!state) return;
+
+  // Check if already monitoring
+  if (socket.pingInterval) {
+    clearInterval(socket.pingInterval);
+
+  }
+
+  console.log("ye streamer ka role dekhne ke liye",socket.data.role)
+
+  // Viewer ki ping monitoring ke liye
+  if (socket.data.role !== 'STREAMER') {
+    socket.isAlive = true;
+    
+    // Ping interval (every 30 seconds)
+    socket.pingInterval = setInterval(() => {
+      if (!socket.isAlive) {
+        // Viewer inactive hai, disconnect karo
+        console.log(`❌ Viewer ${socket.id} inactive, disconnecting...`);
+        cleanupInactiveViewer(socket, io, sessionId);
+        return;
+      }
+      
+      socket.isAlive = false;
+      
+      // Ping bhejo
+      socket.emit('ping', { 
+        timestamp: Date.now(),
+        sessionId: sessionId
+      });
+      
+      console.log(`📡 Ping sent to viewer ${socket.id} (session: ${sessionId})`);
+    }, 30000); // 30 seconds
+
+    // Store interval reference for cleanup
+    socket.pingTimeout = setTimeout(() => {
+      if (socket.pingInterval) {
+        clearInterval(socket.pingInterval);
+        socket.pingInterval = null;
+      }
+    }, 3600000); // 1 hour max
+  }
+};
+
+
+
+export const handlePong = (socket) => {
+  socket.isAlive = true;
+  console.log(`✅ Pong received from viewer ${socket.id}`);
+};
+
+const cleanupInactiveViewer = async (socket, io, sessionId) => {
+  console.log(`🧹 Cleaning up inactive viewer: ${socket.id}`);
+  
+  try {
+    const state = roomState.get(sessionId);
+    if (!state) return;
+
+    // Clean up all producers for this viewer
+    for (const [producerId, producer] of state.producers) {
+      if (producer.appData?.socketId === socket.id) {
+        try {
+          producer.close();
+        } catch (e) {
+          console.warn("Error closing producer during cleanup:", e);
+        }
+        state.producers.delete(producerId);
+        console.log(`Producer ${producerId} closed for inactive viewer`);
+      }
+    }
+
+    // Clean up all consumers for this viewer
+    for (const [consumerId, consumer] of state.consumers) {
+      if (consumer.appData?.socketId === socket.id) {
+        try {
+          consumer.close();
+        } catch (e) {
+          console.warn("Error closing consumer during cleanup:", e);
+        }
+        state.consumers.delete(consumerId);
+        console.log(`Consumer ${consumerId} closed for inactive viewer`);
+      }
+    }
+
+    // Clean up transports
+    for (const [transportId, transport] of state.transports) {
+      if (transport.appData?.socketId === socket.id) {
+        try {
+          transport.close();
+        } catch (e) {
+          console.warn("Error closing transport during cleanup:", e);
+        }
+        state.transports.delete(transportId);
+        console.log(`Transport ${transportId} closed for inactive viewer`);
+      }
+    }
+
+    // Update participants list
+    const meta = state.sockets.get(socket.id);
+    if (meta && meta.userId) {
+      state.participants.delete(meta.userId);
+      
+      // Notify all participants
+      io.to(sessionId).emit("user_left", {
+        userId: meta.userId,
+        socketId: socket.id,
+        reason: "inactive"
+      });
+      
+      broadcastParticipantsList(io, sessionId);
+    }
+
+    // Remove from sockets
+    state.sockets.delete(socket.id);
+    
+    // Remove from viewers set
+    state.viewers.delete(socket.id);
+    
+    // Leave room
+    socket.leave(sessionId);
+    
+    // Disconnect socket
+    socket.disconnect(true);
+    
+    console.log(`✅ Inactive viewer ${socket.id} cleaned up successfully`);
+    
+  } catch (error) {
+    console.error("Error in cleanupInactiveViewer:", error);
+  }
+};

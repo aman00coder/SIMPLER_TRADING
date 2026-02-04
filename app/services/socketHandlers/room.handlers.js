@@ -6,7 +6,7 @@ import authenticationModel from "../../model/Authentication/authentication.model
 import whiteboardModel from "../../model/whiteBoards/whiteBoard.model.js";
 import { ROLE_MAP } from "../../constant/role.js";
 import { roomState } from "../socketState/roomState.js";
-import { getIceServersFromEnv, broadcastParticipantsList, safeEmit } from "../socketUtils/general.utils.js";
+import { getIceServersFromEnv, broadcastParticipantsList, safeEmit, startPingPongMonitoring } from "../socketUtils/general.utils.js";
 
 // ✅ mediasoupWorker parameter add karo
 export const roomJoinHandler = (socket, io, mediasoupWorker) => {
@@ -89,7 +89,9 @@ export const roomJoinHandler = (socket, io, mediasoupWorker) => {
       }
 
       // Handle streamer connection
-      if (userRole === ROLE_MAP.STREAMER) {
+      if (userRole !== ROLE_MAP.STREAMER) {
+              startPingPongMonitoring(socket, io, sid);
+
         if (state.streamerSocketId && state.streamerSocketId !== socket.id) {
           console.log(`Streamer reconnecting from ${state.streamerSocketId} to ${socket.id}`);
           if (state.sockets.has(state.streamerSocketId)) {
