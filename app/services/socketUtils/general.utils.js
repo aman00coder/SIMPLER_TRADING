@@ -54,11 +54,35 @@ export const getIceServersFromEnv = () => {
   return servers;
 };
 
+// export const broadcastParticipantsList = (io, sessionId) => {
+//   const state = roomState.get(sessionId);
+//   if (!state) return;
+
+//   const currentParticipants = Array.from(state.participants.values());
+//   io.to(sessionId).emit("participants_list_updated", {
+//     participants: currentParticipants
+//   });
+// };
+
 export const broadcastParticipantsList = (io, sessionId) => {
   const state = roomState.get(sessionId);
   if (!state) return;
 
-  const currentParticipants = Array.from(state.participants.values());
+  const currentParticipants = Array.from(state.participants.values()).map(p => ({
+    userId: p.userId,
+    socketId: p.socketId,
+    name: p.name,
+    role: p.role,
+    joinedAt: p.joinedAt,
+    hasAudio: p.hasAudio || false,
+    hasVideo: p.hasVideo || false,
+    isScreenSharing: p.isScreenSharing || false,
+    isSpeaking: p.isSpeaking || false,
+    // ✅ MUST INCLUDE hand raise properties
+    isHandRaised: p.isHandRaised || false,
+    handRaisedAt: p.handRaisedAt || null
+  }));
+  
   io.to(sessionId).emit("participants_list_updated", {
     participants: currentParticipants
   });
@@ -312,6 +336,28 @@ export const startSpeakingDetection = (io, sessionId, userId, isSpeaking) => {
   }
 };
 
+// export const broadcastHandRaise = (io, sessionId, userId, isHandRaised) => {
+//   const state = roomState.get(sessionId);
+//   if (!state) return;
+
+//   const participant = state.participants.get(userId);
+//   if (participant) {
+//     participant.isHandRaised = isHandRaised;
+//     participant.handRaisedAt = isHandRaised ? new Date() : null;
+    
+//     // Notify all participants
+//     io.to(sessionId).emit("hand_raise_status", {
+//       userId,
+//       isHandRaised,
+//       timestamp: new Date(),
+//       userName: participant.name
+//     });
+
+//     // Update participant list
+//     broadcastParticipantsList(io, sessionId);
+//   }
+// };
+
 export const broadcastHandRaise = (io, sessionId, userId, isHandRaised) => {
   const state = roomState.get(sessionId);
   if (!state) return;
@@ -321,12 +367,24 @@ export const broadcastHandRaise = (io, sessionId, userId, isHandRaised) => {
     participant.isHandRaised = isHandRaised;
     participant.handRaisedAt = isHandRaised ? new Date() : null;
     
-    // Notify all participants
+    // Find socketId for this user
+    let socketId = participant.socketId;
+    if (!socketId) {
+      for (const [sid, meta] of state.sockets) {
+        if (meta.userId === userId) {
+          socketId = sid;
+          break;
+        }
+      }
+    }
+    
+    // Notify all participants with complete data
     io.to(sessionId).emit("hand_raise_status", {
       userId,
       isHandRaised,
       timestamp: new Date(),
-      userName: participant.name
+      userName: participant.name,
+      socketId: socketId
     });
 
     // Update participant list
