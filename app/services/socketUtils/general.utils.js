@@ -393,7 +393,7 @@ export const startPingPongMonitoring = (socket, io, sessionId) => {
       });
       
       console.log(`📡 Ping sent to viewer ${socket.id} (session: ${sessionId})`);
-    }, 30000); // 30 seconds
+    }, 15000); // 30 seconds
 
     // Store interval reference for cleanup
     socket.pingTimeout = setTimeout(() => {
@@ -401,7 +401,7 @@ export const startPingPongMonitoring = (socket, io, sessionId) => {
         clearInterval(socket.pingInterval);
         socket.pingInterval = null;
       }
-    }, 3600000); // 1 hour max
+    }, 7200000); // 1 hour max
   }
 };
 
