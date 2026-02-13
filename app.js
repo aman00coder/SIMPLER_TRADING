@@ -302,10 +302,8 @@ import mediasoup from "mediasoup";
 // 🔥 Socket.io
 import { setupIntegratedSocket } from "./app/services/socket.integrated.js";
 
-// 🔥 CJS bridge for Yjs
-import { createRequire } from "module";
-const require = createRequire(import.meta.url);
-const { setupYjsServer } = require("./app/services/yjs/yjs.server.cjs");
+// ✅ Yjs (y-websocket compatible) server (Node v24 safe)
+import { setupYWebsocketCompatibleServer, getYjsHealth } from "./app/services/yjs/yjs.server.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -370,6 +368,9 @@ app.get("/", (req, res) => {
   });
 });
 
+// ✅ Yjs Health Check Route
+app.get("/yjs-health", getYjsHealth);
+
 /* =========================
    🔹 HTTP Server
 ========================= */
@@ -388,24 +389,68 @@ const PORT = process.env.PORT || 9090;
     const io = await setupIntegratedSocket(httpServer, worker);
     app.set("io", io);
 
-    // 3️⃣ 🔥 Yjs (NO ROOMS ISSUE SOLVED)
-    setupYjsServer(httpServer);
+    // 3️⃣ ✅ Yjs WS (y-websocket compatible): ws://HOST:PORT/yjs/:sessionId
+    const yjsServer = setupYWebsocketCompatibleServer(httpServer);
+    
+    // Store Yjs server instance for cleanup
+    app.set("yjsServer", yjsServer);
 
     // 4️⃣ Listen
     httpServer.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`🧩 Yjs WS: ws://localhost:${PORT}/yjs`);
+      console.log(`🧩 Yjs WS: ws://localhost:${PORT}/yjs/<sessionId>`);
+      console.log(`📊 Yjs Health: http://localhost:${PORT}/yjs-health`);
     });
 
     const shutdown = async () => {
-      console.log("🛑 Shutting down...");
-      io.close();
-      await worker.close();
-      process.exit(0);
+      console.log("🛑 Shutting down gracefully...");
+      
+      try {
+        // Close Socket.io
+        io.close();
+        console.log("✅ Socket.io closed");
+      } catch (socketErr) {
+        console.error("Error closing socket.io:", socketErr.message);
+      }
+
+      try {
+        // Close Yjs WebSocket server
+        if (yjsServer && typeof yjsServer.cleanup === 'function') {
+          yjsServer.cleanup();
+          console.log("✅ Yjs WebSocket server cleaned up");
+        }
+      } catch (yjsErr) {
+        console.error("Error cleaning up Yjs server:", yjsErr.message);
+      }
+
+      try {
+        // Close Mediasoup worker
+        await worker.close();
+        console.log("✅ Mediasoup worker closed");
+      } catch (workerErr) {
+        console.error("Error closing mediasoup worker:", workerErr.message);
+      }
+
+      setTimeout(() => {
+        console.log("👋 Server shutdown complete");
+        process.exit(0);
+      }, 1000);
     };
 
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
+
+    // ✅ Optional: Monitor Yjs server stats periodically
+    if (yjsServer && typeof yjsServer.getStats === 'function') {
+      setInterval(() => {
+        try {
+          const stats = yjsServer.getStats();
+          console.log(`📊 Yjs Stats: ${stats.totalRooms} rooms, ${stats.totalConnections} connections`);
+        } catch (err) {
+          // Silent fail for monitoring
+        }
+      }, 60000); // Every 60 seconds
+    }
 
   } catch (err) {
     console.error("❌ Startup failed:", err);
