@@ -608,51 +608,159 @@ const handleScreenShareStoppedByViewer = async (socket, io, data) => {
   }
 };
 
-const handleStreamerScreenShareStop = async (socket, io, sessionId) => {
+// const handleStreamerScreenShareStop = async (socket, io, sessionId) => {
+//   try {
+//     console.log("🎥 Streamer stopping own screen share:", socket.id);
+//     const state = roomState.get(sessionId);
+//     if (!state) return;
+
+//     // 🔴 Find and close all screen producers from this streamer
+//     for (const [producerId, producer] of state.producers) {
+//       if (
+//         producer.appData?.socketId === socket.id &&
+//         producer.appData?.source === "screen"
+//       ) {
+//         try {
+//           producer.close();
+//         } catch (e) {
+//           console.warn("Error closing streamer screen producer:", e);
+//         }
+//         state.producers.delete(producerId);
+//         console.log(`✅ Streamer screen producer ${producerId} closed`);
+//       }
+//     }
+
+//     // 🔹 Update participant flag
+//     const participant = state.participants.get(socket.data.userId);
+//     if (participant) {
+//       participant.isScreenSharing = false;
+//       io.to(sessionId).emit("participant_updated", {
+//         userId: socket.data.userId,
+//         updates: { isScreenSharing: false },
+//       });
+//       broadcastParticipantsList(io, sessionId);
+//     }
+
+//     // 🔹 Notify all viewers
+//     io.to(sessionId).emit("screen-share-stop", {
+//       userId: socket.data.userId,
+//       stoppedByStreamer: true,
+//     });
+
+//   } catch (error) {
+//     console.error("Streamer screen share stop error:", error);
+//   }
+// };
+
+// Helper function for consumer creation
+const handleStreamerScreenShareStop = async (socket, sessionId) => {
   try {
     console.log("🎥 Streamer stopping own screen share:", socket.id);
     const state = roomState.get(sessionId);
-    if (!state) return;
+    if (!state) {
+      console.log("❌ No state found for session:", sessionId);
+      return;
+    }
 
-    // 🔴 Find and close all screen producers from this streamer
+    // 🔴 Close ALL screen-related producers (video + audio)
+    let closedCount = 0;
+    const closedProducers = [];
+    
     for (const [producerId, producer] of state.producers) {
+      // Check if this producer belongs to this socket and is screen-related
       if (
-        producer.appData?.socketId === socket.id &&
-        producer.appData?.source === "screen"
+        producer.appData?.socketId === socket.id && 
+        producer.appData?.source && 
+        (producer.appData.source === "screen" || 
+         producer.appData.source === "screen-audio" ||
+         producer.appData.source === "screen_audio" ||
+         producer.appData.source.includes("screen")) // Catch any screen-related source
       ) {
+        const source = producer.appData.source;
+        console.log(`🎯 Found ${source} producer: ${producerId}`);
+        
         try {
+          // Close the producer
           producer.close();
+          closedCount++;
+          closedProducers.push({ producerId, source });
+          console.log(`✅ Closed ${source} producer: ${producerId}`);
         } catch (e) {
-          console.warn("Error closing streamer screen producer:", e);
+          console.error(`❌ Error closing ${source} producer ${producerId}:`, e);
         }
+        
+        // Remove from state regardless of close success
         state.producers.delete(producerId);
-        console.log(`✅ Streamer screen producer ${producerId} closed`);
       }
     }
+
+    console.log(`📊 Summary: Closed ${closedCount} screen share producers:`, 
+      closedProducers.map(p => `${p.source} (${p.producerId})`).join(', '));
 
     // 🔹 Update participant flag
     const participant = state.participants.get(socket.data.userId);
     if (participant) {
       participant.isScreenSharing = false;
+      console.log(`👤 Updated participant ${socket.data.userId} screen sharing flag to false`);
+      
+      // Notify all participants about status change (partial update)
       io.to(sessionId).emit("participant_updated", {
         userId: socket.data.userId,
         updates: { isScreenSharing: false },
       });
-      broadcastParticipantsList(io, sessionId);
+      
+      // Broadcast full updated participants list
+      broadcastParticipantsList(sessionId);
     }
 
-    // 🔹 Notify all viewers
+    // 🔹 Notify all viewers that screen share stopped
+    console.log(`📢 Broadcasting screen-share-stop to all participants in session: ${sessionId}`);
     io.to(sessionId).emit("screen-share-stop", {
       userId: socket.data.userId,
       stoppedByStreamer: true,
+      timestamp: new Date().toISOString(),
+      closedProducers: closedProducers
     });
 
+    // 🔹 Emit individual producer-closed events for cleanup
+    if (closedProducers.length > 0) {
+      closedProducers.forEach(({ source }) => {
+        io.to(sessionId).emit("producer-closed", {
+          userId: socket.data.userId,
+          source: source,
+          timestamp: new Date().toISOString()
+        });
+      });
+    } else {
+      // Fallback if no producers were found but we still want to notify
+      io.to(sessionId).emit("producer-closed", {
+        userId: socket.data.userId,
+        source: "screen"
+      });
+      io.to(sessionId).emit("producer-closed", {
+        userId: socket.data.userId,
+        source: "screen-audio"
+      });
+    }
+
+    console.log(`✅ Streamer screen share stop completed successfully for user: ${socket.data.userId}`);
+
   } catch (error) {
-    console.error("Streamer screen share stop error:", error);
+    console.error("❌ Streamer screen share stop error:", error);
+    // Even on error, try to notify participants
+    try {
+      io.to(sessionId).emit("screen-share-stop", {
+        userId: socket.data.userId,
+        stoppedByStreamer: true,
+        error: true,
+        timestamp: new Date().toISOString()
+      });
+    } catch (emitError) {
+      console.error("Failed to emit error notification:", emitError);
+    }
   }
 };
 
-// Helper function for consumer creation
 const createConsumer = async (socket, io, sessionId, producerId, kind) => {
   try {
     console.log("Creating consumer for producer:", producerId, "kind:", kind);
