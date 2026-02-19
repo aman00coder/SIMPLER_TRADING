@@ -19,9 +19,9 @@ export const screenShareHandlers = (socket, io) => {
     handleViewerScreenShareStart(socket, io, data.sessionId, data.transportId, data.kind, data.rtpParameters, cb)
   );
   
-  socket.on("screen-share-stop", (data) => 
-    handleStreamerScreenShareStop(socket, io, data.sessionId, data.userId)
-  );
+  // socket.on("screen-share-stop", (data) => 
+  //   handleStreamerScreenShareStop(socket, io, data.sessionId, data.userId)
+  // );
   
   socket.on("screen-share-force-stop", (data) => 
     handleStreamerStopScreenShare(socket, io, data.sessionId, data.targetUserId)
@@ -653,113 +653,131 @@ const handleScreenShareStoppedByViewer = async (socket, io, data) => {
 // };
 
 // Helper function for consumer creation
-const handleStreamerScreenShareStop = async (socket, sessionId) => {
+// ✅ UPDATED: io parameter add + broadcastParticipantsList(io, sessionId) fix
+const handleStreamerScreenShareStop = async (socket, io, sessionId) => {
   try {
-    console.log("🎥 Streamer stopping own screen share:", socket.id);
+    console.log("🎥 Streamer stopping own screen share:", socket.id, "session:", sessionId);
+
     const state = roomState.get(sessionId);
     if (!state) {
       console.log("❌ No state found for session:", sessionId);
       return;
     }
 
-    // 🔴 Close ALL screen-related producers (video + audio)
+    const streamerUserId = socket.data?.userId;
+    if (!streamerUserId) {
+      console.log("❌ socket.data.userId missing, cannot stop screen share safely");
+      return;
+    }
+
+    // ✅ Close ALL screen-related producers belonging to this socket/user
     let closedCount = 0;
     const closedProducers = [];
-    
-    for (const [producerId, producer] of state.producers) {
-      // Check if this producer belongs to this socket and is screen-related
-      if (
-        producer.appData?.socketId === socket.id && 
-        producer.appData?.source && 
-        (producer.appData.source === "screen" || 
-         producer.appData.source === "screen-audio" ||
-         producer.appData.source === "screen_audio" ||
-         producer.appData.source.includes("screen")) // Catch any screen-related source
-      ) {
-        const source = producer.appData.source;
-        console.log(`🎯 Found ${source} producer: ${producerId}`);
-        
+
+    // ⚠️ Safe iteration: copy entries first (because we delete while iterating)
+    const producerEntries = Array.from(state.producers.entries());
+
+    for (const [producerId, producer] of producerEntries) {
+      const src = producer?.appData?.source || "";
+      const belongsToThisSocket =
+        producer?.appData?.socketId === socket.id ||
+        producer?.appData?.userId === streamerUserId;
+
+      const isScreenRelated =
+        src === "screen" ||
+        src === "screen-audio" ||
+        src === "screen_audio" ||
+        src === "streamer-screen" ||
+        src === "streamer-screen-audio" ||
+        src.includes("screen");
+
+      if (belongsToThisSocket && isScreenRelated) {
+        console.log(`🎯 Found screen producer: ${producerId}, source: ${src}`);
+
         try {
-          // Close the producer
           producer.close();
-          closedCount++;
-          closedProducers.push({ producerId, source });
-          console.log(`✅ Closed ${source} producer: ${producerId}`);
+          console.log(`✅ Closed producer: ${producerId} (${src})`);
         } catch (e) {
-          console.error(`❌ Error closing ${source} producer ${producerId}:`, e);
+          console.error(`❌ Error closing producer ${producerId} (${src}):`, e);
         }
-        
-        // Remove from state regardless of close success
+
+        closedCount++;
+        closedProducers.push({ producerId, source: src });
+
+        // remove from state
         state.producers.delete(producerId);
       }
     }
 
-    console.log(`📊 Summary: Closed ${closedCount} screen share producers:`, 
-      closedProducers.map(p => `${p.source} (${p.producerId})`).join(', '));
+    console.log(
+      `📊 Summary: Closed ${closedCount} screen producers ->`,
+      closedProducers.map(p => `${p.source}(${p.producerId})`).join(", ")
+    );
 
-    // 🔹 Update participant flag
-    const participant = state.participants.get(socket.data.userId);
+    // ✅ Update participant flag
+    const participant = state.participants.get(streamerUserId);
     if (participant) {
       participant.isScreenSharing = false;
-      console.log(`👤 Updated participant ${socket.data.userId} screen sharing flag to false`);
-      
-      // Notify all participants about status change (partial update)
+
       io.to(sessionId).emit("participant_updated", {
-        userId: socket.data.userId,
+        userId: streamerUserId,
         updates: { isScreenSharing: false },
       });
-      
-      // Broadcast full updated participants list
-      broadcastParticipantsList(sessionId);
+
+      // ✅ Correct call
+      broadcastParticipantsList(io, sessionId);
     }
 
-    // 🔹 Notify all viewers that screen share stopped
-    console.log(`📢 Broadcasting screen-share-stop to all participants in session: ${sessionId}`);
+    // ✅ Notify all participants that streamer screen share stopped
     io.to(sessionId).emit("screen-share-stop", {
-      userId: socket.data.userId,
+      userId: streamerUserId,
       stoppedByStreamer: true,
       timestamp: new Date().toISOString(),
-      closedProducers: closedProducers
+      closedProducers,
     });
 
-    // 🔹 Emit individual producer-closed events for cleanup
+    // ✅ Emit producer-closed for cleanup (frontend listeners rely on this)
     if (closedProducers.length > 0) {
-      closedProducers.forEach(({ source }) => {
+      for (const { producerId, source } of closedProducers) {
         io.to(sessionId).emit("producer-closed", {
-          userId: socket.data.userId,
-          source: source,
-          timestamp: new Date().toISOString()
+          userId: streamerUserId,
+          producerId,
+          source,
+          timestamp: new Date().toISOString(),
         });
-      });
+      }
     } else {
-      // Fallback if no producers were found but we still want to notify
+      // fallback signals (optional)
       io.to(sessionId).emit("producer-closed", {
-        userId: socket.data.userId,
-        source: "screen"
+        userId: streamerUserId,
+        source: "screen",
+        timestamp: new Date().toISOString(),
       });
       io.to(sessionId).emit("producer-closed", {
-        userId: socket.data.userId,
-        source: "screen-audio"
+        userId: streamerUserId,
+        source: "screen-audio",
+        timestamp: new Date().toISOString(),
       });
     }
 
-    console.log(`✅ Streamer screen share stop completed successfully for user: ${socket.data.userId}`);
-
+    console.log("✅ Streamer screen share stop completed:", streamerUserId);
   } catch (error) {
     console.error("❌ Streamer screen share stop error:", error);
-    // Even on error, try to notify participants
+
+    // Even on error, notify participants
     try {
       io.to(sessionId).emit("screen-share-stop", {
-        userId: socket.data.userId,
+        userId: socket.data?.userId,
         stoppedByStreamer: true,
         error: true,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
     } catch (emitError) {
-      console.error("Failed to emit error notification:", emitError);
+      console.error("❌ Failed to emit error screen-share-stop:", emitError);
     }
   }
 };
+
 
 const createConsumer = async (socket, io, sessionId, producerId, kind) => {
   try {
